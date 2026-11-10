@@ -227,7 +227,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun vrPermissions() =
-        if (BuildConfig.BE) arrayOf(Manifest.permission.RECORD_AUDIO)
+        // Cinema only needs the local gallery at startup. Camera is requested later, on demand.
+        if (BuildConfig.BE && android.os.Build.VERSION.SDK_INT >= 33)
+            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+        else if (BuildConfig.BE) arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         else if (android.os.Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.CAMERA, Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.RECORD_AUDIO)
         else arrayOf(Manifest.permission.CAMERA, Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.RECORD_AUDIO)
 
