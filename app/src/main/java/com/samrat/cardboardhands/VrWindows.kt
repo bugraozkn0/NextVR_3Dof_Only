@@ -396,7 +396,7 @@ class BrowserContent(
     @SuppressLint("SetJavaScriptEnabled")
     private fun buildWebView(context: Context, url: String): WebView {
         // Debug builds: pages can be inspected from chrome://inspect on the computer.
-        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+        if (BuildConfig.DEBUG && !BuildConfig.BE) WebView.setWebContentsDebuggingEnabled(true)
         return WebView(context).apply {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
