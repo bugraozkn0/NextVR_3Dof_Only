@@ -93,6 +93,7 @@ import kotlin.math.hypot
 class VrHomeActivity : Activity(), LifecycleOwner {
     private val lifecycleRegistry = LifecycleRegistry(this)
     override val lifecycle: Lifecycle get() = lifecycleRegistry
+    private val cameraPreviewPermissionRequest = 9401
 
     private lateinit var surfaceView: GLSurfaceView
     private lateinit var tracker: HeadTracker
@@ -300,7 +301,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         sixMode = Settings.sixDofMode(this)
         six = startSixDof(sixMode)
         neckModel = six == null && !Settings.travelMode(this)
-        remote.start()
+        // Cinema edition never starts the remote-control server.
+        if (!BuildConfig.BE) remote.start()
         if (!BuildConfig.BE) trackingExecutor.execute {
             pinchHands = runCatching { PinchHands(this, useGpu = true) }
                 .getOrElse { PinchHands(this, useGpu = false) }
@@ -323,8 +325,13 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         synchronized(panel) { panel.car = carMode }
         tracker.start()
         sensorSixDof?.let { it.reset(); it.start() }
-        if (BuildConfig.BE) Unit
-        else if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) toast("Allow NextVR to use the camera")
+        if (BuildConfig.BE) {
+            // In cinema edition the camera is optional: only stream it behind the VR windows
+            // while the user explicitly selects the real-world environment.
+            if (environmentId == Environments.REAL_WORLD &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            ) bindCamera()
+        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) toast("Allow NextVR to use the camera")
         else {
             val tracker = six
             // A tracker that borrows the camera (VINS-Mono) needs the home's own stream; ARCore opens
@@ -949,6 +956,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun bindCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
+            // If the viewer went back to a virtual room while CameraX was opening, do not
+            // start a hidden camera stream. Also avoids binding after the activity closes.
+            if (isFinishing || (BuildConfig.BE && environmentId != Environments.REAL_WORLD) ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+            ) return@addListener
             val provider = future.get()
             cameraProvider = provider
             // A 6DoF tracker that borrows the camera (VINS-Mono) is calibrated for one frame size and
@@ -983,7 +995,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                         if (frameFresh.getAndSet(true) && old != null && old !== upright) old.recycle()
                     }
                     val timestamp = image.imageInfo.timestamp / 1_000_000L
-                    if (busy.compareAndSet(false, true)) {
+                    // Skip expensive hand-frame scaling when the camera is only passthrough.
+                    if (pinchHands != null && busy.compareAndSet(false, true)) {
                         val small = Bitmap.createScaledBitmap(upright, 640, 640 * upright.height / upright.width, true)
                         trackingExecutor.execute {
                             try {
@@ -1562,10 +1575,37 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     /** The world the passthrough button goes back to. */
     private var lastWorld = Environments.BUILT_IN.first { it.id != Environments.REAL_WORLD }.id
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (BuildConfig.BE && requestCode == cameraPreviewPermissionRequest &&
+            environmentId == Environments.REAL_WORLD
+        ) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) bindCamera()
+            } else {
+                setEnvironment(lastWorld)
+                toast("Camera permission denied. The virtual room is still available.")
+            }
+        }
+    }
+
     private fun setEnvironment(id: String) {
         environmentId = id
         if (id != Environments.REAL_WORLD) lastWorld = id
         synchronized(panel) { panel.passthrough = id == Environments.REAL_WORLD }
+        if (BuildConfig.BE) {
+            if (id == Environments.REAL_WORLD) {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    // Ask only when entering passthrough. Browsing and cinema need no camera.
+                    requestPermissions(arrayOf(Manifest.permission.CAMERA), cameraPreviewPermissionRequest)
+                } else if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    bindCamera()
+                }
+            } else {
+                // Black/panorama mode stops camera capture; videos keep playing in their windows.
+                cameraProvider?.unbindAll()
+            }
+        }
         redraw.set(true)
         thread(name = "PhoneXR environment") {
             val bitmap = runCatching { Environments.panorama(this, id) }.getOrNull()
