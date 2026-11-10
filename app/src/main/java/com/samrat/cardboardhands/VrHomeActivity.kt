@@ -98,6 +98,88 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private lateinit var surfaceView: GLSurfaceView
     private lateinit var tracker: HeadTracker
     private val panel = HomePanel()
+    private val cinemaDwell = CinemaGazeController()
+    private var cinemaControlsUntil = 0L
+    private var cinemaMovingWindow = false
+
+    /** Gaze-only UI: when media plays, nothing is clicked accidentally.
+     *  Look at the window toolbar for a full second to enable controls for 12 seconds.
+     *  The movie surface itself never activates while playback is running.
+     *  Browser scroll arrows live inside the page so they work on narrow mobile layouts.
+     */
+    private fun updateCinemaGaze() {
+        if (!BuildConfig.BE) return
+        val now = SystemClock.uptimeMillis()
+        val playing = windows.any { window ->
+            if (window.minimized) false else when (val content = window.content) {
+                // A local film window remains protected even while manually paused;
+                // otherwise one-second gaze would instantly resume it.
+                is VideoContent -> true
+                is BrowserContent -> content.cinemaVideoPlaying
+                else -> false
+            }
+        }
+        val direction = ray
+        val target = hit
+        // Two-stage gaze drag: dwell on move/resize handle, move your head,
+        // then hold gaze still for one second to drop the window.
+        if (cinemaMovingWindow) {
+            val dir = direction
+            val dropKey = if (dir == null) null else
+                "drop:${(dir[0] * 30).toInt()}:${(dir[1] * 30).toInt()}"
+            if (cinemaDwell.update(dropKey, now)) {
+                release()
+                cinemaMovingWindow = false
+                cinemaDwell.reset()
+            }
+            return
+        }
+        if (playing && now >= cinemaControlsUntil) {
+            // The browser/video toolbar is the only possible unlock target. This is
+            // safe when reclining: looking at the ceiling must not unlock anything.
+            val canUnlock = target is Hit.Toolbar && (
+                target.window.content is VideoContent || target.window.content is BrowserContent
+            )
+            val key = if (canUnlock) "unlock:${(target as Hit.Toolbar).window.id}" else null
+            if (cinemaDwell.update(key, now)) {
+                cinemaControlsUntil = now + 12000L
+                runOnUiThread { toast("Cinema controls enabled for 12 seconds") }
+            }
+            return
+        }
+        val key = when (target) {
+            is Hit.Content -> if (playing && (
+                target.window.content is VideoContent || target.window.content is BrowserContent
+            )) null else "content:${target.window.id}:${(target.u * 24).toInt()}:${(target.v * 20).toInt()}"
+            is Hit.Panel -> synchronized(panel) { panel.hit(target.u, target.v) }?.let { "panel:$it" }
+            is Hit.Toolbar -> "toolbar:${target.window.id}:${(target.u * 16).toInt()}:${(target.v * 4).toInt()}"
+            is Hit.Keyboard -> "keyboard:${(target.u * 15).toInt()}:${(target.v * 12).toInt()}"
+            is Hit.Setup -> "setup:${(target.u * 12).toInt()}:${(target.v * 9).toInt()}"
+            is Hit.Bar -> "move:${target.window.id}"
+            is Hit.Resize -> "resize:${target.window.id}"
+            null -> null
+            else -> target.toString()
+        }
+        val scroll = target is Hit.Content && target.window.content is BrowserContent &&
+            target.u in .91f..0.99f && (target.v in 0.39f..0.49f || target.v in 0.50f..0.60f) &&
+            !(target.window.content as BrowserContent).cinemaVideoPlaying
+        val dwellKey = if (scroll) "scroll:${(target as Hit.Content).window.id}:${if (target.v < .50f) -1 else 1}" else key
+        if (cinemaDwell.update(dwellKey, now, repeatable = scroll)) {
+            if (scroll) {
+                val content = (target as Hit.Content).window.content as BrowserContent
+                content.cinemaScroll(if (target.v < .50f) -1 else 1)
+            } else if (target is Hit.Bar || target is Hit.Resize) {
+                press(target, direction)
+                cinemaMovingWindow = true
+                cinemaDwell.reset()
+            } else {
+                press(target, direction)
+                release()
+            }
+            if (playing) cinemaControlsUntil = now + 12000L
+        }
+    }
+
     /** Control from the Mac (PhoneXR Share) over USB: see and work the windows with mouse and keys. */
     private val remote = RemoteControl(object : RemoteControl.Host {
         override fun windows(): List<VrWindow> = windows.toList()
@@ -681,9 +763,13 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             val web = WebApps.installed(this).map { app ->
                 HomePanel.Entry("web:${app.url}", app.name, WebApps.icon(app)?.let { BitmapDrawable(resources, it) } ?: letterIcon(app.name))
             }
-            synchronized(panel) { panel.setHome(own + vr + web) }
+            val allEntries = own + vr + web
+            val visibleEntries = if (BuildConfig.BE)
+                allEntries.filter { it.id == ID_BROWSER || it.id == ID_PHOTOS || it.id == ID_SETTINGS }
+                else allEntries
+            synchronized(panel) { panel.setHome(visibleEntries) }
             updateDock()
-            storeApps = WebApps.fromStore()
+            storeApps = if (BuildConfig.BE) emptyList() else WebApps.fromStore()
             refreshStore()
         }
     }
@@ -2219,7 +2305,10 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         override fun onDrawFrame(unused: GL10?) {
             while (true) glTasks.poll()?.invoke() ?: break
             followWithPanel()
-            if (BuildConfig.BE) gaze()
+            if (BuildConfig.BE) {
+                gaze()
+                updateCinemaGaze()
+            }
             val tracker6 = six
             if (tracker6 != null) updateSixDof(tracker6)
             // The neck model only stands in when no tracker exists at all. A tracker that is merely
@@ -3310,3 +3399,4 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             void main() { gl_FragColor = uColor; }"""
     }
 }
+

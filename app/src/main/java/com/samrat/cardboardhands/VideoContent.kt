@@ -44,7 +44,7 @@ class VideoContent(
             runCatching {
                 media.setDataSource(context, uri)
                 media.setSurface(surface)
-                media.isLooping = true
+                media.isLooping = !BuildConfig.BE
                 media.setOnPreparedListener {
                     // The picture the file really has decides how the window is filled.
                     texture?.setDefaultBufferSize(it.videoWidth.coerceAtLeast(16), it.videoHeight.coerceAtLeast(16))
@@ -115,3 +115,4 @@ class VideoContent(
         player = null
     }
 }
+

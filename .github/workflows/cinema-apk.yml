@@ -1,0 +1,43 @@
+name: Cinema APK
+on:
+  push:
+    branches: [main, feature/cinema-passthrough-mvp]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinema-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager 'platforms;android-37' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and debug APK
+        run: ./gradlew :app:testBeDebugUnitTest :app:assembleBeDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Verify installable APK and record checksum
+        run: |
+          APK=app/build/outputs/apk/be/debug/app-be-debug.apk
+          "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/37.0.0/aapt" dump badging "$APK" | grep -E "package:|launchable-activity:|sdkVersion:|targetSdkVersion:"
+          sha256sum "$APK"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-3dof-debug-apk
+          path: app/build/outputs/apk/be/debug/app-be-debug.apk
+          if-no-files-found: error
+          retention-days: 14

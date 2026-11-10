@@ -156,8 +156,52 @@ class BrowserContent(
     }
     private var display: VirtualDisplay? = null
     private var presentation: Presentation? = null
+    private var cinemaHost: android.widget.FrameLayout? = null
+    private var cinemaFullscreen: android.view.View? = null
+    private var cinemaFullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    val cinemaVideoPlaying: Boolean get() = tabs.getOrNull(active)?.cinemaPlaying == true
+
+    private fun cinemaMount(view: android.view.View) {
+        val host = cinemaHost ?: return
+        cinemaHideFullscreen(notifyPage = true)
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        host.removeAllViews()
+        host.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** Native fullscreen stays on the browser's virtual screen, inside the VR window. */
+    private fun cinemaShowFullscreen(view: android.view.View, callback: WebChromeClient.CustomViewCallback) {
+        val host = cinemaHost ?: run { callback.onCustomViewHidden(); return }
+        if (cinemaFullscreen != null) { callback.onCustomViewHidden(); return }
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        cinemaFullscreen = view
+        cinemaFullscreenCallback = callback
+        presentation?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        host.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun cinemaHideFullscreen(notifyPage: Boolean = false) {
+        val view = cinemaFullscreen ?: return
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        cinemaFullscreen = null
+        presentation?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        val callback = cinemaFullscreenCallback
+        cinemaFullscreenCallback = null
+        if (notifyPage) callback?.onCustomViewHidden()
+    }
+
+    fun cinemaScroll(direction: Int) {
+        main.post {
+            val web = webView ?: return@post
+            val js = "window.__nxCinemaScroll && window.__nxCinemaScroll($direction)"
+            web.evaluateJavascript(js, null)
+        }
+    }
+
     /** A tab: its own WebView, where it is and what it is called. Changed on the main thread only. */
-    private class Tab(var view: WebView, @Volatile var url: String, @Volatile var title: String = "")
+    private class Tab(var view: WebView, @Volatile var url: String, @Volatile var title: String = "") {
+        @Volatile var cinemaPlaying = false
+    }
 
     private val tabs = java.util.concurrent.CopyOnWriteArrayList<Tab>()
     @Volatile private var active = 0
@@ -221,8 +265,9 @@ class BrowserContent(
     private fun showTab(index: Int) {
         if (index !in tabs.indices) return
         setImmersive(false)
+        cinemaHideFullscreen(notifyPage = true)
         active = index
-        presentation?.setContentView(tabs[index].view)
+        cinemaMount(tabs[index].view)
         keyboard = false
         version++
     }
@@ -252,9 +297,10 @@ class BrowserContent(
     private fun ownPage() = currentUrl.startsWith("file:///android_asset/")
 
     /** Called from the page script: text fields and WebXR sessions. */
-    private inner class Bridge {
+    private inner class Bridge(private val owner: WebView) {
         @JavascriptInterface fun keyboard(show: Boolean) { keyboard = show }
         @JavascriptInterface fun video(state: String) { onVideo?.invoke(state) }
+        @JavascriptInterface fun cinemaMedia(playing: Boolean) { tabOf(owner)?.cinemaPlaying = playing }
         @JavascriptInterface fun enterXr(url: String) { onWebXr(url) }
         @JavascriptInterface fun immersive(on: Boolean, augmented: Boolean) { setImmersive(on, augmented) }
         /** Before an immersive session: the page goes to the standard size and gets it as "WxH". */
@@ -338,6 +384,10 @@ class BrowserContent(
     override fun toolbarAction(action: String) {
         main.post {
             val view = webView ?: return@post
+            if (action == "back" && cinemaFullscreen != null) {
+                cinemaHideFullscreen(notifyPage = true)
+                return@post
+            }
             when (action) {
                 "back" -> if (view.canGoBack()) view.goBack()
                 "forward" -> if (view.canGoForward()) view.goForward()
@@ -385,7 +435,10 @@ class BrowserContent(
             presentation = Presentation(context, created.display).apply {
                 // Translucent, so an immersive-ar page can show the camera where it draws nothing.
                 window?.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
-                setContentView(view)
+                val container = android.widget.FrameLayout(context)
+                cinemaHost = container
+                container.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+                setContentView(container)
                 show()
             }
             onReady()
@@ -417,16 +470,19 @@ class BrowserContent(
                     }
 
                     override fun onPageStarted(view: WebView, address: String?, favicon: Bitmap?) {
+                        tabOf(view)?.cinemaPlaying = false
+                        if (view === webView) cinemaHideFullscreen(notifyPage = true)
                         keyboard = false
                         setImmersive(false)
                         // Old WebView without document-start scripts: as early as it can be.
-                        if (!webXrAtStart) view.evaluateJavascript(webXrScript(view.context), null)
+                        if (!webXrAtStart && !BuildConfig.BE) view.evaluateJavascript(webXrScript(view.context), null)
                         view.evaluateJavascript(PAGE_SCRIPT, null)
                     }
 
                     override fun onPageCommitVisible(view: WebView, address: String?) = view.evaluateJavascript(PAGE_SCRIPT, null)
 
                     override fun onPageFinished(view: WebView, address: String?) {
+                        if (BuildConfig.BE) view.evaluateJavascript(CinemaBrowserScript.SETUP, null)
                         view.evaluateJavascript(PAGE_SCRIPT, null)
                         togetherScript?.let { view.evaluateJavascript(it, null) }
                         val title = view.title.orEmpty()
@@ -444,19 +500,27 @@ class BrowserContent(
                             val tab = tabOf(view)
                             val fresh = buildWebView(view.context, tab?.url ?: currentUrl)
                             tab?.view = fresh
-                            if (tab == tabs.getOrNull(active)) presentation?.setContentView(fresh)
+                            if (tab == tabs.getOrNull(active)) cinemaMount(fresh)
                             view.destroy()
                         }
                         return true
                     }
                 }
                 webChromeClient = object : WebChromeClient() {
+                    override fun onShowCustomView(view: android.view.View, callback: WebChromeClient.CustomViewCallback) {
+                        main.post { cinemaShowFullscreen(view, callback) }
+                    }
+
+                    override fun onHideCustomView() {
+                        main.post { cinemaHideFullscreen() }
+                    }
+
                     override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
                         if (message.message().startsWith("PhoneXR")) android.util.Log.i("PhoneXR-WebXR", message.message())
                         return false
                     }
                 }
-                addJavascriptInterface(Bridge(), "PhoneXR")
+                addJavascriptInterface(Bridge(this), "PhoneXR")
                 // Downloads go to Downloads/PhoneXR with the system's download manager.
                 setDownloadListener { url, agent, disposition, mime, _ ->
                     val name = android.webkit.URLUtil.guessFileName(url, disposition, mime)
@@ -480,7 +544,7 @@ class BrowserContent(
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = BrowserData.desktop(context)
                 settings.setSupportMultipleWindows(false)
-                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                if (!BuildConfig.BE && androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     androidx.webkit.WebViewCompat.addDocumentStartJavaScript(this, webXrScript(context), setOf("*"))
                     webXrAtStart = true
                 }
@@ -549,6 +613,8 @@ class BrowserContent(
 
     override fun release() {
         main.post {
+            cinemaHideFullscreen(notifyPage = true)
+            cinemaHost = null
             presentation?.dismiss()
             tabs.forEach { it.view.destroy() }
             display?.release()
@@ -1099,3 +1165,4 @@ class PhotosContent(
         list
     }.getOrDefault(emptyList())
 }
+
