@@ -133,6 +133,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     @Volatile private var cinemaDistance = 1f
     @Volatile private var cinemaEnvironmentHeading=0f
     @Volatile private var cinemaCameraCorrection=0
+    @Volatile private var cinemaDiagnostics=false
     @Volatile private var environmentGeneration = 0
     private val cinemaPrefs by lazy { getSharedPreferences("cinema_controls", MODE_PRIVATE) }
 
@@ -387,6 +388,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaPrefs.edit().putInt("camera_correction",cinemaCameraCorrection).apply()
                 cinemaHint="Camera orientation +"+cinemaCameraCorrection+"° • Hands follow the same correction"
             }
+            "diagnostics" -> {
+                cinemaDiagnostics=!cinemaDiagnostics
+                cinemaPrefs.edit().putBoolean("diagnostics",cinemaDiagnostics).apply()
+                cinemaHint=if(cinemaDiagnostics) "Diagnostics ON" else "Diagnostics OFF • Control hints are visible"
+            }
             "recenter" -> recenter()
             "passthrough" -> runOnUiThread {setEnvironment(if(environmentId==Environments.REAL_WORLD) lastWorld else Environments.REAL_WORLD)}
             "environment" -> runOnUiThread {
@@ -617,6 +623,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if (BuildConfig.BE) {
             cinemaHandsEnabled=cinemaPrefs.getBoolean("hands",false)
             cinemaCameraCorrection=cinemaPrefs.getInt("camera_correction",0).mod(360)
+            cinemaDiagnostics=cinemaPrefs.getBoolean("diagnostics",false)
             cinemaDwell.dwellMs=cinemaPrefs.getLong("dwell",950L).coerceIn(500,2000)
             cinemaDwell.deadZone=cinemaPrefs.getFloat("deadzone",.012f).coerceIn(.006f,.024f)
             setEnvironment("black")
@@ -2966,7 +2973,12 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                         val actions=cinemaActions(window)
                         val action=(hit as? Hit.Cinema)?.takeIf {it.window==window}?.action
                         val disabled=cinemaDisabled(window)
-                        val hint=if(cinemaCameraActive) "CAMERA ON • cap %.0f / preview %.0f / render %.0f FPS • ML %.0f FPS %.0f ms • buffer %.0f ms".format(cinemaPreview?.captureFps?:0f,cinemaPreview?.previewFps?:0f,cinemaRenderFps,if(cinemaHandsEnabled) cinemaAnalysisFps else 0f,cinemaAnalysisMs,cinemaPreview?.bufferAgeMs?:-1f) else cinemaHint
+                        val hint=if(cinemaCameraActive && cinemaDiagnostics)
+                            "Camera capture %.0f / preview %.0f / render %.0f FPS • hands %.0f FPS / %.0f ms • buffer %.0f ms".format(
+                                cinemaPreview?.captureFps?:0f,cinemaPreview?.previewFps?:0f,
+                                cinemaRenderFps,if(cinemaHandsEnabled) cinemaAnalysisFps else 0f,
+                                cinemaAnalysisMs,cinemaPreview?.bufferAgeMs?:-1f)
+                            else cinemaHint
                         val playback=when(val c=window.content) {is BrowserContent->c.cinemaPlayback;is VideoContent->c.cinemaState;else->"unknown"}
                         val stamp="$actions|$action|$disabled|$hint|$playback"
                         val barTexture=frameTexture("cinema:"+window.id,stamp) {CinemaControls.draw(actions,action,disabled,hint,playback)}
