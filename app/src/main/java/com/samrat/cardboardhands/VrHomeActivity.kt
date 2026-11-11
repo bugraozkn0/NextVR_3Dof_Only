@@ -112,13 +112,16 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private var cinemaDropRay: FloatArray? = null
     private var cinemaLastAnalysis = 0L
     @Volatile private var cinemaAnalysisMs = 0f
+    @Volatile private var cinemaAnalysisFps=0f
+    private var cinemaAnalysisFrames=0
+    private var cinemaAnalysisEpoch=0L
     @Volatile private var cinemaCameraActive = false
     @Volatile private var cinemaBindGeneration = 0
     @Volatile private var cinemaHint = "Dwell to select • Tap still works"
     private var cinemaPermissionPending=false
-    private var cinemaDistance = 1f
-    private var cinemaEnvironmentHeading=0f
-    private var environmentGeneration = 0
+    @Volatile private var cinemaDistance = 1f
+    @Volatile private var cinemaEnvironmentHeading=0f
+    @Volatile private var environmentGeneration = 0
     private val cinemaPrefs by lazy { getSharedPreferences("cinema_controls", MODE_PRIVATE) }
 
     private fun cinemaActions(window: VrWindow) = CinemaControls.actions(window.content is BrowserContent, cinemaSession(window).controls)
@@ -155,6 +158,13 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun updateCinemaGaze() {
         if (!BuildConfig.BE) return
         val now=SystemClock.uptimeMillis()
+        // Media availability is independent of whichever input source currently owns the cursor.
+        windows.filter { !it.minimized }.forEach { window ->
+            val browser=window.content as? BrowserContent ?: return@forEach
+            val target=hit
+            if(target is Hit.Content && target.window==window) browser.cinemaProbe(target.u,target.v)
+            else browser.cinemaProbe()
+        }
         val handFrame=cinemaHandFrame
         if(cinemaHandsEnabled && handFrame!=null && SystemClock.elapsedRealtimeNanos()-handFrame.timeNs in 0L..300_000_000L) {
             val hand=handFrame.hands.firstOrNull { it.shape.palmWidth>=.035f }
@@ -193,11 +203,6 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             if(now-cinemaDropAt>=850) {release();cinemaMovingWindow=false;cinemaDwell.reset()}
             cinemaHint="Move your head, then hold still to drop"
             return
-        }
-        windows.forEach { window ->
-            val browser=window.content as? BrowserContent ?: return@forEach
-            if(target is Hit.Content && target.window==window) browser.cinemaProbe(target.u,target.v)
-            else browser.cinemaProbe()
         }
         focused?.let { window ->
             val content=window.content
@@ -1189,7 +1194,12 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                             trackingExecutor.execute {
                                 try {pinchHands?.detect(upright,timestamp,scaleX=viewScaleX,scaleY=viewScaleY)?.let {if(cinemaHandsEnabled && cinemaCameraActive) {cinemaHandFrame=it;handPoints=it.points}}}
                                 catch(error:Throwable) {Log.w(TAG,"Experimental hand analysis failed",error)}
-                                finally {upright.recycle();cinemaAnalysisMs=(SystemClock.elapsedRealtimeNanos()-began)/1_000_000f;busy.set(false)}
+                                finally {upright.recycle();cinemaAnalysisMs=(SystemClock.elapsedRealtimeNanos()-began)/1_000_000f
+                                    val time=SystemClock.uptimeMillis()
+                                    if(cinemaAnalysisEpoch==0L) cinemaAnalysisEpoch=time
+                                    cinemaAnalysisFrames++
+                                    if(time-cinemaAnalysisEpoch>=1000) {cinemaAnalysisFps=cinemaAnalysisFrames*1000f/(time-cinemaAnalysisEpoch);cinemaAnalysisFrames=0;cinemaAnalysisEpoch=time}
+                                    busy.set(false)}
                             }
                         }
                     } catch(error:Throwable) {busy.set(false);Log.w(TAG,"Hand frame rejected",error)}
@@ -2737,9 +2747,10 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                         val actions=cinemaActions(window)
                         val action=(hit as? Hit.Cinema)?.takeIf {it.window==window}?.action
                         val disabled=cinemaDisabled(window)
-                        val hint=if(cinemaCameraActive) "CAMERA ON • cap %.0f / preview %.0f / render %.0f FPS • analysis %.0f ms • buffer age %.0f ms".format(cinemaPreview?.captureFps?:0f,cinemaPreview?.previewFps?:0f,cinemaRenderFps,cinemaAnalysisMs,cinemaPreview?.bufferAgeMs?:-1f) else cinemaHint
-                        val stamp="$actions|$action|$disabled|$hint"
-                        val barTexture=frameTexture("cinema:"+window.id,stamp) {CinemaControls.draw(actions,action,disabled,hint)}
+                        val hint=if(cinemaCameraActive) "CAMERA ON • cap %.0f / preview %.0f / render %.0f FPS • ML %.0f FPS %.0f ms • buffer %.0f ms".format(cinemaPreview?.captureFps?:0f,cinemaPreview?.previewFps?:0f,cinemaRenderFps,if(cinemaHandsEnabled) cinemaAnalysisFps else 0f,cinemaAnalysisMs,cinemaPreview?.bufferAgeMs?:-1f) else cinemaHint
+                        val playback=when(val c=window.content) {is BrowserContent->c.cinemaPlayback;is VideoContent->c.cinemaState;else->"unknown"}
+                        val stamp="$actions|$action|$disabled|$hint|$playback"
+                        val barTexture=frameTexture("cinema:"+window.id,stamp) {CinemaControls.draw(actions,action,disabled,hint,playback)}
                         val top=-h-.30f
                         quad(textureProgram,barTexture,mvp,floatArrayOf(-w,top-CinemaControls.HEIGHT_M,z,0f,1f,w,top-CinemaControls.HEIGHT_M,z,1f,1f,-w,top,z,0f,0f,w,top,z,1f,0f))
                     }

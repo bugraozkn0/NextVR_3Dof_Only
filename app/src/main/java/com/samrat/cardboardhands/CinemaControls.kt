@@ -35,7 +35,7 @@ internal object CinemaControls {
         "sensitivity" -> "Sensitivity"; "help" -> "Help"; "hide" -> "Hide controls"; "show" -> "Show controls"
         "address" -> "Address / search"; "fullscreen" -> "Fullscreen"; else -> action.replaceFirstChar { it.uppercase() }
     }
-    fun draw(actions: List<String>, hovered: String?, unavailable: Set<String>, hint: String): Bitmap {
+    fun draw(actions: List<String>, hovered: String?, unavailable: Set<String>, hint: String, playback: String = "unknown"): Bitmap {
         val b = Bitmap.createBitmap(1800, 480, Bitmap.Config.ARGB_8888)
         val c = Canvas(b)
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -51,7 +51,8 @@ internal object CinemaControls {
             c.drawRoundRect(r,16f,16f,p)
             p.color = if (a in unavailable) Color.rgb(125,132,145) else Color.WHITE
             p.textSize = 27f; p.textAlign = Paint.Align.CENTER
-            c.drawText(label(a),r.centerX(),r.centerY()+10,p)
+            val shown=if(a=="play") when(playback) {"playing"->"Pause";"paused","ended"->"Play";"buffering"->"Buffering…";else->label(a)} else label(a)
+            c.drawText(shown,r.centerX(),r.centerY()+10,p)
         }
         p.color=Color.rgb(171,204,220); p.textSize=26f
         c.drawText(hint.take(110),900f,454f,p)
