@@ -119,4 +119,11 @@ internal object CinemaCameraUv {
         270 -> (1f-v) to u
         else -> u to v
     }
+    /** Camera image-to-view mapping for the optional MANUAL correction. The
+     * automatic CameraX target rotation has already been applied to ImageAnalysis.
+     */
+    fun handToView(u:Float,v:Float,correctionDegrees:Int,mirror:Boolean=false):Pair<Float,Float> {
+        val (x,y)=rotate(u,v,(360-correctionDegrees.mod(360)).mod(360))
+        return (if(mirror) 1f-x else x) to y
+    }
 }
