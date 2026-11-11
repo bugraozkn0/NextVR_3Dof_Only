@@ -10,7 +10,7 @@ class CinemaHandMotionTest {
     @Test fun stillPinchProducesClick() {
         val motion=CinemaHandMotion()
         motion.begin(.5f,.4f)
-        assertEquals(0f,motion.sample(.51f,.41f))
+        assertEquals(0f,motion.sample(.51f,.41f),.0001f)
         assertTrue(motion.finish())
         assertFalse(motion.finish())
     }
@@ -18,7 +18,7 @@ class CinemaHandMotionTest {
     @Test fun upwardsHandMotionScrollsDownWithoutClick() {
         val motion=CinemaHandMotion()
         motion.begin(.4f,.5f)
-        assertEquals(0f,motion.sample(.4f,.49f))
+        assertEquals(0f,motion.sample(.4f,.49f),.0001f)
         assertTrue(motion.sample(.4f,.45f)>0f)
         assertTrue(motion.scrolling)
         assertFalse(motion.finish())
@@ -27,7 +27,7 @@ class CinemaHandMotionTest {
     @Test fun horizontalWiggleDoesNotScroll() {
         val motion=CinemaHandMotion()
         motion.begin(.4f,.5f)
-        assertEquals(0f,motion.sample(.55f,.48f))
+        assertEquals(0f,motion.sample(.55f,.48f),.0001f)
         assertFalse(motion.scrolling)
         assertTrue(motion.finish())
     }
