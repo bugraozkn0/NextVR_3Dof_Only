@@ -29,12 +29,21 @@ class CinemaHandMotionTest {
         motion.begin(.4f,.5f)
         assertEquals(0f,motion.sample(.55f,.48f),.0001f)
         assertFalse(motion.scrolling)
-        assertTrue(motion.finish())
+        assertFalse(motion.finish())
+    }
+
+    @Test fun handReturnsToStartAfterSidewaysTravelDoesNotClick() {
+        val motion=CinemaHandMotion()
+        motion.begin(.4f,.5f)
+        assertEquals(0f,motion.sample(.50f,.5f),.0001f)
+        assertEquals(0f,motion.sample(.4f,.5f),.0001f)
+        assertFalse(motion.finish())
     }
 
     @Test fun twoHandScaleNeedsSustainedBothHandPinchAndClamps() {
         val scale=CinemaTwoHandScale(armMs=150)
         assertNull(scale.update(true,.2f,.5f,.6f,.5f,100,1f))
+        assertTrue(scale.blocking)
         assertNull(scale.update(true,.2f,.5f,.6f,.5f,200,1f))
         assertEquals(1f,scale.update(true,.2f,.5f,.6f,.5f,250,1f)!!,.001f)
         assertTrue(scale.active)
