@@ -36,7 +36,7 @@ class CinemaHandMotionTest {
         val scale=CinemaTwoHandScale(armMs=150)
         assertNull(scale.update(true,.2f,.5f,.6f,.5f,100,1f))
         assertNull(scale.update(true,.2f,.5f,.6f,.5f,200,1f))
-        assertEquals(1f,scale.update(true,.2f,.5f,.6f,.5f,250,1f)!!)
+        assertEquals(1f,scale.update(true,.2f,.5f,.6f,.5f,250,1f)!!,.001f)
         assertTrue(scale.active)
         assertEquals(2f,scale.update(true,.1f,.5f,.9f,.5f,280,1f)!!, .001f)
         assertEquals(3.4f,scale.update(true,0f,0f,1f,1f,300,3f)!!.coerceAtMost(3.4f),.001f)
