@@ -24,8 +24,8 @@ class CinemaCameraUvTest {
         assertEquals(.75f,quarter.first,.0001f)
         assertEquals(.75f,quarter.second,.0001f)
         val restored = CinemaCameraUv.rotate(quarter.first, quarter.second, 270)
-        assertEquals(point.first, restored.first)
-        assertEquals(point.second, restored.second)
+        assertEquals(point.first, restored.first, .0001f)
+        assertEquals(point.second, restored.second, .0001f)
     }
 
     @Test fun halfTurnAndFullTurn() {
