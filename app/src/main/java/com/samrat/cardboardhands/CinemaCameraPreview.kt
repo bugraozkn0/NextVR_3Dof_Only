@@ -40,7 +40,11 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
     private val width = request.resolution.width
     private val height = request.resolution.height
     var ready = false; private set
-    val aspect get() = if (rotation % 180 == 0) crop.width().toFloat()/crop.height() else crop.height().toFloat()/crop.width()
+    val aspect get():Float {
+        val base=if(rotation%180==0) crop.width().toFloat()/crop.height().coerceAtLeast(1)
+            else crop.height().toFloat()/crop.width().coerceAtLeast(1)
+        return if(correctionDegrees.mod(180)==0) base else 1f/base.coerceAtLeast(.001f)
+    }
     init {
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,texture)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
