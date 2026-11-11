@@ -32,4 +32,13 @@ class CinemaCameraUvTest {
         assertEquals(.75f to .25f, CinemaCameraUv.rotate(.25f,.75f,180))
         assertEquals(.25f to .75f, CinemaCameraUv.rotate(.25f,.75f,360))
     }
+    @Test fun manualCameraCorrectionMapsHandInTheSameDirection() {
+        val corrected=CinemaCameraUv.handToView(.25f,.75f,90)
+        assertEquals(.25f,corrected.first)
+        assertEquals(.25f,corrected.second)
+        val mirrored=CinemaCameraUv.handToView(.25f,.75f,90,true)
+        assertEquals(.75f,mirrored.first)
+        assertEquals(.25f,mirrored.second)
+    }
+
 }
