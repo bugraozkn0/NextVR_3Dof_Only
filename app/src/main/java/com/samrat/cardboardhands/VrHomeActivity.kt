@@ -127,6 +127,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private var cinemaPermissionPending=false
     @Volatile private var cinemaDistance = 1f
     @Volatile private var cinemaEnvironmentHeading=0f
+    @Volatile private var cinemaCameraCorrection=0
     @Volatile private var environmentGeneration = 0
     private val cinemaPrefs by lazy { getSharedPreferences("cinema_controls", MODE_PRIVATE) }
 
@@ -206,11 +207,12 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaHandDriving=true
                 activeLeft=hand.left
                 cinemaInput.hand(now)
-                val tx=pinchX.filter((hand.x-.5f)*2*viewScaleX,handFrame.timeNs)
-                val ty=pinchY.filter((.5f-hand.y)*2*viewScaleY,handFrame.timeNs)
+                val (handX,handY)=CinemaCameraUv.handToView(hand.x,hand.y,cinemaCameraCorrection)
+                val tx=pinchX.filter((handX-.5f)*2*viewScaleX,handFrame.timeNs)
+                val ty=pinchY.filter((.5f-handY)*2*viewScaleY,handFrame.timeNs)
                 val direction=tangentRay(tx,ty,handFrame.timeNs)
                 ray=direction;updateHit(hitTest(direction))
-                pinchPoint=floatArrayOf(hand.x,hand.y);beam=null
+                pinchPoint=floatArrayOf(handX,handY);beam=null
                 pinching=hand.pinching
                 (hit as? Hit.Content)?.let {target ->
                     (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)
@@ -222,7 +224,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                         cinemaSession(target.window).surfaceEnabled) {
                         // Delay possible link click until release so a scroll gesture cannot
                         // accidentally navigate away from YouTube or other web pages.
-                        cinemaHandMotion.begin(hand.x,hand.y)
+                        cinemaHandMotion.begin(handX,handY)
                         cinemaHandScrollTarget=target
                         cinemaHandLastMotionNs=handFrame.timeNs
                     } else if(cinemaKey(target)!=null) press(target,direction)
@@ -230,7 +232,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 val scrolling=cinemaHandScrollTarget
                 if(scrolling!=null && hand.pinching && handFrame.timeNs!=cinemaHandLastMotionNs) {
                     cinemaHandLastMotionNs=handFrame.timeNs
-                    val delta=cinemaHandMotion.sample(hand.x,hand.y)
+                    val delta=cinemaHandMotion.sample(handX,handY)
                     if(kotlin.math.abs(delta)>.001f) {
                         val pixels=(delta*scrolling.window.content.pixelHeight*1.25f).toInt()
                         val pointer=hit as? Hit.Content
@@ -329,7 +331,28 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             "size" -> {window.widthScale=if(window.widthScale>=2.8f) 1.4f else window.widthScale+.35f;window.heightScale=window.widthScale}
             "distance" -> {cinemaDistance=if(cinemaDistance>=1.4f) .8f else cinemaDistance+.2f;cinemaHint="Virtual distance: %.1f m".format(windowRadius)}
             "curve" -> window.arcDegrees=when(window.arcDegrees.toInt()){0->35f;35->55f;else->0f}
-            "envYaw" -> {cinemaEnvironmentHeading=(cinemaEnvironmentHeading+15f)%360f;cinemaHint="Room heading: "+cinemaEnvironmentHeading.toInt()+"°"}
+            "envYaw","roomRight","roomLeft" -> {
+                val amount=if(action=="roomLeft") -5f else if(action=="roomRight") 5f else 15f
+                cinemaEnvironmentHeading=(cinemaEnvironmentHeading+amount+360f)%360f
+                cinemaPrefs.edit().putFloat("room_heading:"+environmentId,cinemaEnvironmentHeading).apply()
+                cinemaHint="Room rotated to "+cinemaEnvironmentHeading.toInt()+"° • Use Align screen here"
+            }
+            "alignScreen" -> {
+                // User looks at the intended cinema screen in the panorama, then chooses Align.
+                // Never rotate the panorama together with windows: each has its own orientation.
+                val pose=FloatArray(16).also {tracker.copyHead(it)}
+                val forward=FloatArray(4)
+                Matrix.multiplyMV(forward,0,pose,0,floatArrayOf(0f,0f,-1f,0f),0)
+                window.yaw=yawOf(forward)
+                window.height=0f
+                window.arcDegrees=0f
+                cinemaHint="Screen aligned to gaze • Pinch its handle for fine adjustments"
+            }
+            "cameraRotate" -> {
+                cinemaCameraCorrection=(cinemaCameraCorrection+90)%360
+                cinemaPrefs.edit().putInt("camera_correction",cinemaCameraCorrection).apply()
+                cinemaHint="Camera orientation +"+cinemaCameraCorrection+"° • Hands follow the same correction"
+            }
             "recenter" -> recenter()
             "passthrough" -> runOnUiThread {setEnvironment(if(environmentId==Environments.REAL_WORLD) lastWorld else Environments.REAL_WORLD)}
             "environment" -> runOnUiThread {
@@ -559,6 +582,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         // BE has no camera to show the room: a black space around the windows.
         if (BuildConfig.BE) {
             cinemaHandsEnabled=cinemaPrefs.getBoolean("hands",false)
+            cinemaCameraCorrection=cinemaPrefs.getInt("camera_correction",0).mod(360)
             cinemaDwell.dwellMs=cinemaPrefs.getLong("dwell",950L).coerceIn(500,2000)
             cinemaDwell.deadZone=cinemaPrefs.getFloat("deadzone",.012f).coerceIn(.006f,.024f)
             setEnvironment("black")
@@ -1978,6 +2002,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun setEnvironment(id: String) {
         environmentId = id
         if (id != Environments.REAL_WORLD) lastWorld = id
+        if(BuildConfig.BE) cinemaEnvironmentHeading=cinemaPrefs.getFloat("room_heading:"+id,0f)
         synchronized(panel) { panel.passthrough = id == Environments.REAL_WORLD }
         if (BuildConfig.BE) updateCinemaCamera()
         redraw.set(true)
@@ -2405,8 +2430,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             val vertices=FloatArray(cinemaVisualHands.size*cinemaBones.size*3)
             var o=0
             for(hand in cinemaVisualHands) for(point in cinemaBones) {
-                vertices[o++]=(hand[point*3]-.5f)*2f*viewScaleX
-                vertices[o++]=(.5f-hand[point*3+1])*2f*viewScaleY
+                val (x,y)=CinemaCameraUv.handToView(hand[point*3],hand[point*3+1],cinemaCameraCorrection)
+                vertices[o++]=(x-.5f)*2f*viewScaleX
+                vertices[o++]=(.5f-y)*2f*viewScaleY
                 vertices[o++]=-1f
             }
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProgram,"uColor"),
@@ -2678,6 +2704,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 val now=SystemClock.uptimeMillis()
                 if(now-cinemaRenderEpoch>=1000) {cinemaRenderFps=cinemaRenderFrames*1000f/(now-cinemaRenderEpoch);cinemaRenderFrames=0;cinemaRenderEpoch=now}
             }
+            cinemaPreview?.correctionDegrees=cinemaCameraCorrection
             cinemaPreview?.latch()
             val tracker6 = six
             if (tracker6 != null) updateSixDof(tracker6)
@@ -2821,12 +2848,15 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 // The place around the user, behind everything else.
                 Matrix.multiplyMM(mvp, 0, projection, 0, view, 0)
                 if (hasEnvironment) environmentMesh?.let { mesh ->
-                    if(BuildConfig.BE) Matrix.rotateM(mvp,0,cinemaEnvironmentHeading,0f,1f,0f)
+                    // Rotate ONLY the panorama. Never mutate mvp: the same matrix is
+                    // subsequently used by the home panel and all media windows.
+                    val environmentMvp=mvp.copyOf()
+                    if(BuildConfig.BE) Matrix.rotateM(environmentMvp,0,cinemaEnvironmentHeading,0f,1f,0f)
                     GLES20.glUseProgram(textureProgram)
                     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
                     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, environmentTexture)
                     GLES20.glUniform1i(GLES20.glGetUniformLocation(textureProgram, "uTexture"), 0)
-                    GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(textureProgram, "uMvp"), 1, false, mvp, 0)
+                    GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(textureProgram, "uMvp"), 1, false, environmentMvp, 0)
                     triangles(textureProgram, mesh)
                 }
                 // The room sliders: dim the room, then fog and rain in it, all under the home and windows.
