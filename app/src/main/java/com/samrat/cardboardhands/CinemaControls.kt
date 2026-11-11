@@ -13,7 +13,8 @@ internal object CinemaControls {
     val browser = listOf("back", "forward", "reload", "address", "home", "cinema",
         "scrollUp", "scrollDown", "play", "seekBack", "seekForward", "fullscreen",
         "size", "distance", "curve", "recenter", "environment", "passthrough",
-        "website", "hands", "dwell", "sensitivity", "help", "hide", "envYaw")
+        "alignScreen", "roomLeft", "roomRight", "cameraRotate",
+        "website", "hands", "dwell", "sensitivity", "help", "hide")
     val video = browser.filter { it !in listOf("back", "forward", "reload", "address", "home", "scrollUp", "scrollDown", "fullscreen") }
     fun actions(isBrowser: Boolean, shown: Boolean): List<String> =
         if (!shown) (if (isBrowser) listOf("show", "scrollUp", "scrollDown", "help") else listOf("show", "help"))
@@ -30,7 +31,8 @@ internal object CinemaControls {
         "scrollUp" -> "Scroll up"; "scrollDown" -> "Scroll down"; "play" -> "Play / pause"
         "seekBack" -> "−10 seconds"; "seekForward" -> "+10 seconds"; "cinema" -> "Cinema / browser"
         "size" -> "Screen size"; "distance" -> "Distance"; "curve" -> "Curvature"
-        "envYaw" -> "Room heading"; "recenter" -> "Recenter"; "environment" -> "Environment"; "passthrough" -> "Real world"
+        "alignScreen" -> "Align screen here"; "roomLeft" -> "Room −5°"; "roomRight" -> "Room +5°"
+        "cameraRotate" -> "Rotate camera +90°"; "recenter" -> "Recenter"; "environment" -> "Environment"; "passthrough" -> "Real world"
         "website" -> "Website controls"; "hands" -> "Hands (experimental)"; "dwell" -> "Dwell time"
         "sensitivity" -> "Sensitivity"; "help" -> "Help"; "hide" -> "Hide controls"; "show" -> "Show controls"
         "address" -> "Address / search"; "fullscreen" -> "Fullscreen"; else -> action.replaceFirstChar { it.uppercase() }
