@@ -60,7 +60,7 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
         com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.HandLandmarkerOptions.builder()
             .setBaseOptions(com.google.mediapipe.tasks.core.BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
             .setRunningMode(com.google.mediapipe.tasks.vision.core.RunningMode.VIDEO)
-            .setNumHands(1).setMinHandDetectionConfidence(.6f).setMinHandPresenceConfidence(.6f).setMinTrackingConfidence(.6f).build()) else null
+            .setNumHands(2).setMinHandDetectionConfidence(.6f).setMinHandPresenceConfidence(.6f).setMinTrackingConfidence(.6f).build()) else null
     /** Kept as the application context: a latch outlives the screen it was made on. */
     private val app = context.applicationContext
     private val smoothers = HashMap<String, LandmarkSmoother>()
