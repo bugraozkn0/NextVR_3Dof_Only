@@ -25,6 +25,11 @@ object Environments {
 
     val BUILT_IN = listOf(
         Place(REAL_WORLD, "Real world"),
+        Place("black", "Black / Void"),
+        Place("pretville_cinema", "Cinema (CC0)"),
+        Place("warm_bar", "Cozy interior (CC0)"),
+        Place("rooftop_night", "Night rooftop (CC0)"),
+        Place("rogland_clear_night", "Starry night (CC0)"),
         Place("sunset", "Sunset"),
         Place("night", "Night"),
         Place("space", "Space"),
@@ -55,6 +60,13 @@ object Environments {
     fun panorama(context: Context, id: String, width: Int = 2048): Bitmap? {
         if (id == REAL_WORLD) return null
         if (id == "black") return Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLACK) }
+        if(id in listOf("pretville_cinema","warm_bar","rooftop_night","rogland_clear_night")) {
+            return runCatching {
+                context.assets.open("environments/$id.jpg").use {
+                    BitmapFactory.decodeStream(it,null,BitmapFactory.Options().apply {inSampleSize=if(width<=512) 4 else 1})
+                }
+            }.getOrNull()
+        }
         val height = width / 2
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)

@@ -1,63 +1,58 @@
 package com.samrat.cardboardhands
 
-/** Lightweight, no-network controls added inside regular WebView pages.
- *  The bar lives in page space, but its clicks are still delivered by the VR gaze cursor.
- *  The script runs on every navigation and is idempotent per document.
+/** Native-to-page queries only. No privileged JavascriptInterface is exposed to websites.
+ * Cross-origin/DRM players are deliberately reported unavailable.
  */
 internal object CinemaBrowserScript {
     val SETUP = """
 (() => {
-  if (window.__nxCinemaInstalled) return;
-  window.__nxCinemaInstalled = true;
-  const scrollByPage = (direction) => {
-    let el = document.elementFromPoint(window.innerWidth * .55, window.innerHeight * .55);
+  if (window.__nxCinema) return;
+  let seq = 0; const ids = new WeakMap();
+  const video = () => Array.from(document.querySelectorAll('video')).sort((a,b) =>
+    (b.clientWidth*b.clientHeight) - (a.clientWidth*a.clientHeight))[0];
+  const state = () => {
+    const v = video();
+    return { controllable: !!v, fullscreen: !!document.fullscreenElement,
+      playback: !v ? 'unknown' : v.ended ? 'ended' : v.paused ? 'paused' : v.readyState < 3 ? 'buffering' : 'playing' };
+  };
+  const hit = (u,v) => {
+    let el = document.elementFromPoint(u*innerWidth,v*innerHeight);
+    el = el && el.closest('a[href],button,input,textarea,select,summary,[role=button],[role=link],[role=menuitem],[role=tab],[contenteditable=true],video');
+    if (!el) return null;
+    if (!ids.has(el)) ids.set(el, ++seq);
+    const r = el.getBoundingClientRect();
+    return {id:String(ids.get(el)), label:(el.getAttribute('aria-label') || el.innerText || el.tagName).slice(0,70),
+      enabled:!el.disabled && el.getAttribute('aria-disabled') !== 'true',
+      l:r.left/innerWidth,t:r.top/innerHeight,r:r.right/innerWidth,b:r.bottom/innerHeight};
+  };
+  const scroll = direction => {
+    let el = document.elementFromPoint(innerWidth*.55,innerHeight*.55);
     while (el && el !== document.body && el !== document.documentElement) {
-      const st = window.getComputedStyle(el);
-      if (el.scrollHeight > el.clientHeight + 20 && /auto|scroll|overlay/.test(st.overflowY)) break;
-      el = el.parentElement;
+      if (el.scrollHeight > el.clientHeight+20 && /auto|scroll|overlay/.test(getComputedStyle(el).overflowY)) break;
+      el=el.parentElement;
     }
-    const delta = Math.round(window.innerHeight * .7) * (direction > 0 ? 1 : -1);
-    const target = el && el !== document.body && el !== document.documentElement
-        ? el : (document.scrollingElement || document.documentElement);
-    try { target.scrollBy({top: delta, behavior: 'smooth'}); }
-    catch (e) { target.scrollTop += delta; }
+    const target = el && el !== document.body ? el : document.scrollingElement;
+    if (target) target.scrollBy({top:innerHeight*.65*direction,behavior:'smooth'});
   };
-  window.__nxCinemaScroll = scrollByPage;
-  const isPlaying = () => Array.from(document.querySelectorAll('video')).some(v =>
-    !v.paused && !v.ended);
-  const report = () => {
-    try { window.PhoneXR && window.PhoneXR.cinemaMedia(isPlaying()); } catch (e) {}
-    const bar = document.getElementById('__nxCinemaScrollBar');
-    if (bar) bar.style.display = isPlaying() || !!document.fullscreenElement ? 'none' : 'flex';
+  const action = command => {
+    const v=video();
+    if (command==='scrollUp' || command==='scrollDown') {scroll(command==='scrollUp'?-1:1);return true;}
+    if (command==='fullscreen') {
+      if (document.fullscreenElement) {document.exitFullscreen().catch(()=>{});return true;}
+      if (!v || !v.requestFullscreen) return false;
+      v.requestFullscreen().catch(()=>{});return true;
+    }
+    if (!v) return false;
+    if (command==='play') {if(v.paused) v.play().catch(()=>{});else v.pause();}
+    else if(command==='seekBack'||command==='seekForward') {
+      if(!Number.isFinite(v.duration)||!v.seekable.length) return false;
+      v.currentTime=Math.max(v.seekable.start(0),Math.min(v.seekable.end(v.seekable.length-1),v.currentTime+(command==='seekBack'?-10:10)));
+    } else return false;
+    return true;
   };
-  const attachBar = () => {
-    if (!document.body || document.getElementById('__nxCinemaScrollBar')) return;
-    const bar = document.createElement('div');
-    bar.id = '__nxCinemaScrollBar';
-    bar.style.cssText = 'position:fixed!important;top:39%!important;right:1%!important;'+
-       'display:flex;flex-direction:column;gap:1vh;z-index:2147483647!important;'+
-       'pointer-events:auto;user-select:none;touch-action:manipulation;';
-    const make = (glyph, direction) => {
-      const b = document.createElement('button');
-      b.type = 'button'; b.textContent = glyph; b.setAttribute('aria-label', direction < 0 ? 'Scroll up' : 'Scroll down');
-      b.style.cssText = 'all:initial;display:flex!important;align-items:center;'+
-        'justify-content:center;width:8vw;height:10vh;border:1px solid #94a3b8;'+
-        'border-radius:16px;background:rgba(24,32,48,.85);color:white;'+
-        'font:700 30px/1 sans-serif;box-shadow:0 3px 18px #0009;cursor:pointer;';
-      b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); scrollByPage(direction); });
-      return b;
-    };
-    bar.appendChild(make('▲', -1)); bar.appendChild(make('▼', 1));
-    document.body.appendChild(bar);
-    report();
-  };
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachBar, {once:true});
-  else attachBar();
-  document.addEventListener('play', report, true);
-  document.addEventListener('pause', report, true);
-  document.addEventListener('ended', report, true);
-  document.addEventListener('fullscreenchange', report, true);
-  report();
+  window.__nxCinema={state,hit,action};
 })();
 """.trimIndent()
+    fun query(u: Float, v: Float) = SETUP + "\nJSON.stringify({input:!!document.activeElement && document.activeElement.matches(\'input,textarea,[contenteditable=true]\'),media:window.__nxCinema.state(),hit:window.__nxCinema.hit($u,$v)})"
+    fun action(action: String) = "window.__nxCinema && window.__nxCinema.action(" + org.json.JSONObject.quote(action) + ")"
 }

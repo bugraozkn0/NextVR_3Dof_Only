@@ -27,8 +27,26 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;36.0.0'
       - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: app/src/be/assets/environments
+          key: cinema-panorama-2k-v2-${{ hashFiles('scripts/prepare_cinema_environments.py', 'scripts/CinemaJpeg.java') }}
+      - name: Prepare genuine CC0 panoramas (runner only)
+        run: python3 scripts/prepare_cinema_environments.py
       - name: Unit tests and debug APK
         run: ./gradlew :app:testBeDebugUnitTest :app:assembleBeDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Android lint
+        run: ./gradlew :app:lintBeDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-v2-test-evidence
+          path: |
+            app/build/test-results/testBeDebugUnitTest/
+            app/build/reports/lint-results-beDebug.html
+            app/src/be/assets/environments/credits.json
+          if-no-files-found: warn
       - name: Verify installable APK and record checksum
         run: |
           APK=app/build/outputs/apk/be/debug/app-be-debug.apk
@@ -38,7 +56,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: cinema-3dof-debug-apk
+          name: cinema-3dof-v2-debug-apk
           path: app/build/outputs/apk/be/debug/app-be-debug.apk
           if-no-files-found: error
           retention-days: 14

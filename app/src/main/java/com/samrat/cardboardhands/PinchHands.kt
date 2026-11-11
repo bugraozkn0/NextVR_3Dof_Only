@@ -54,7 +54,13 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
         val shapes: List<Pair<Boolean, HandGestures.Shape>> get() = hands.map { it.left to it.shape }
     }
 
-    private val fusion = FusionHands(context, useGpu, yoloEveryMs = if (BuildConfig.LITE) 500L else 250L)
+    private val fusion = if (!BuildConfig.BE) FusionHands(context, useGpu, yoloEveryMs = if (BuildConfig.LITE) 500L else 250L) else null
+    // BE uses the existing MediaPipe model directly: no YOLO model, rescue pass or extra thread.
+    private val cinemaHands = if (BuildConfig.BE) com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.createFromOptions(context,
+        com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.HandLandmarkerOptions.builder()
+            .setBaseOptions(com.google.mediapipe.tasks.core.BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
+            .setRunningMode(com.google.mediapipe.tasks.vision.core.RunningMode.VIDEO)
+            .setNumHands(1).setMinHandDetectionConfidence(.6f).setMinHandPresenceConfidence(.6f).setMinTrackingConfidence(.6f).build()) else null
     /** Kept as the application context: a latch outlives the screen it was made on. */
     private val app = context.applicationContext
     private val smoothers = HashMap<String, LandmarkSmoother>()
@@ -69,7 +75,10 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
         bitmap: Bitmap, timestampMs: Long, rotationDegrees: Int = 0,
         map: FloatArray? = null, scaleX: Float = 16f / 9f, scaleY: Float = 1f,
     ): Frame {
-        val result = fusion.detect(bitmap, timestampMs, rotationDegrees)
+        val result = fusion?.detect(bitmap, timestampMs, rotationDegrees) ?: run {
+            val image = com.google.mediapipe.framework.image.BitmapImageBuilder(bitmap).build()
+            try { cinemaHands!!.detectForVideo(image,timestampMs) } finally { image.close() }
+        }
         val timeNs = result.timestampMs() * 1_000_000L
         fun label(index: Int) = result.handednesses().getOrNull(index)?.firstOrNull()?.categoryName() ?: "hand$index"
         val raw = result.landmarks().map { points ->
@@ -113,7 +122,7 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
         return Frame(drawn, hands, timeNs)
     }
 
-    override fun close() = fusion.close()
+    override fun close() { fusion?.close(); cinemaHands?.close() }
 
     /** One Euro filters for the 21 points of one hand (x and y on the view, z relative depth). */
     private class LandmarkSmoother {

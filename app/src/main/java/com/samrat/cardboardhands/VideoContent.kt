@@ -32,6 +32,16 @@ class VideoContent(
     override val external = true
 
     private var player: MediaPlayer? = null
+    @Volatile var cinemaState = "buffering"
+        private set
+    private var resumeAfterPause=false
+    fun cinemaForeground(on: Boolean) {
+        Handler(Looper.getMainLooper()).post {runCatching {
+            val media=player?:return@runCatching
+            if(!on) {resumeAfterPause=media.isPlaying;if(resumeAfterPause) media.pause()}
+            else if(resumeAfterPause) {media.start();resumeAfterPause=false}
+        }}
+    }
     private var texture: SurfaceTexture? = null
     @Volatile private var version = 0
 
@@ -49,9 +59,12 @@ class VideoContent(
                     // The picture the file really has decides how the window is filled.
                     texture?.setDefaultBufferSize(it.videoWidth.coerceAtLeast(16), it.videoHeight.coerceAtLeast(16))
                     it.start()
+                    cinemaState="playing"
                     version++
                     onReady()
                 }
+                media.setOnCompletionListener {cinemaState="ended";version++}
+                media.setOnInfoListener {_,what,_->if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START) cinemaState="buffering" else if(what==MediaPlayer.MEDIA_INFO_BUFFERING_END) cinemaState=if(media.isPlaying) "playing" else "paused";false}
                 media.setOnErrorListener { _, what, _ ->
                     onError("The video didn't open (code $what)")
                     true
@@ -66,6 +79,15 @@ class VideoContent(
         }
     }
 
+    override fun restoreTexture(context:Context,texture:SurfaceTexture?,onReady:()->Unit) {
+        this.texture=texture
+        texture?.setDefaultBufferSize(pixelWidth,pixelHeight)
+        Handler(Looper.getMainLooper()).post {
+            val surface=Surface(texture)
+            runCatching {player?.setSurface(surface)}
+            surface.release();onReady()
+        }
+    }
     override fun uv(eye: Int): FloatArray = Spatial.uv(layout, eye)
 
     override fun toolbarTitle(): String = buildString {
@@ -87,6 +109,7 @@ class VideoContent(
                 "reload" -> media.seekTo(0)
                 "home" -> if (media.isPlaying) media.pause() else media.start()
             }
+            cinemaState=if(media.isPlaying) "playing" else "paused"
             version++
         }
     }
@@ -97,6 +120,7 @@ class VideoContent(
         runCatching {
             if (v > .88f) media.seekTo((u * media.duration).toInt().coerceIn(0, media.duration))
             else if (media.isPlaying) media.pause() else media.start()
+            cinemaState=if(media.isPlaying) "playing" else "paused"
             version++
         }
     }

@@ -15,6 +15,9 @@ import kotlin.math.atan2
  */
 class HeadTracker(private val sensors: SensorManager, private val display: () -> Display?) : SensorEventListener {
     val head = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
+    var fullRecenter = false
+    @Volatile private var recenterFull = true
+    private val fullOffset = FloatArray(16)
     private val rotation = FloatArray(9)
     @Volatile private var yawOffset = Float.NaN
     /** In a car or a train the world turns under the user; that slow turn is followed and removed. */
@@ -35,6 +38,7 @@ class HeadTracker(private val sensors: SensorManager, private val display: () ->
     /** Makes the current head direction "straight ahead". */
     fun recenter() {
         yawOffset = Float.NaN
+        recenterFull = true
     }
 
     /**
@@ -106,7 +110,10 @@ class HeadTracker(private val sensors: SensorManager, private val display: () ->
         val recenter = FloatArray(16)
         Matrix.setRotateM(recenter, 0, Math.toDegrees(-yawOffset.toDouble()).toFloat(), 0f, 1f, 0f)
         synchronized(head) {
-            Matrix.multiplyMM(head, 0, recenter, 0, gl, 0)
+            if(fullRecenter) {
+                if(recenterFull) {Matrix.invertM(fullOffset,0,gl,0);recenterFull=false}
+                Matrix.multiplyMM(head,0,fullOffset,0,gl,0)
+            } else Matrix.multiplyMM(head, 0, recenter, 0, gl, 0)
             System.arraycopy(head, 0, history[historyNext], 0, 16)
             historyTimes[historyNext] = event.timestamp
             historyNext = (historyNext + 1) % HISTORY

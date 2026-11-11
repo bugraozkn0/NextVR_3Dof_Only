@@ -41,12 +41,23 @@ class CinemaLauncherActivity : Activity() {
         }
         val start = Button(this).apply {
             text = "Start VR"
-            setOnClickListener { launchWithMediaAccess() }
+            setOnClickListener { launchVr() }
         }
         val gallery = Button(this).apply {
             text = "Allow photos and videos"
             setOnClickListener { requestMediaAccess() }
         }
+        val file = Button(this).apply {
+            text="Open a single video (no gallery permission)"
+            setOnClickListener {
+                // https://developer.android.com/training/data-storage/shared/documents-files#open-file
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE);type="video/*"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                },2902)
+            }
+        }
+        root.addView(file, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(title, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(caption, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(start, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -77,6 +88,13 @@ class CinemaLauncherActivity : Activity() {
         }
     }
 
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==2902 && resultCode==RESULT_OK) data?.data?.let {uri ->
+            runCatching {contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)}
+            startActivity(Intent(this,VrHomeActivity::class.java).setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        }
+    }
     private fun launchVr() {
         startActivity(Intent(this, VrHomeActivity::class.java))
     }
