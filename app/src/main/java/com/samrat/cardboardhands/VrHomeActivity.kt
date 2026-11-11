@@ -105,6 +105,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun cinemaSession(window:VrWindow) = cinemaSessions.getOrPut(window.id) {CinemaSession()}
     private val cinemaInput = CinemaInputArbiter()
     private val cinemaPinch = CinemaPinchGate()
+    private val cinemaHandMotion = CinemaHandMotion()
+    private val cinemaTwoHand = CinemaTwoHandScale()
+    private var cinemaHandScrollTarget: Hit.Content? = null
+    private var cinemaHandLastMotionNs = -1L
+    private var cinemaTwoHandUsed = false
     @Volatile private var cinemaHandsEnabled = false
     @Volatile private var cinemaHandFrame: PinchHands.Frame? = null
     private var cinemaHandDriving = false
@@ -167,31 +172,110 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             else browser.cinemaProbe()
         }
         val handFrame=cinemaHandFrame
-        if(cinemaHandsEnabled && handFrame!=null && SystemClock.elapsedRealtimeNanos()-handFrame.timeNs in 0L..300_000_000L) {
-            val hand=handFrame.hands.firstOrNull { it.shape.palmWidth>=.035f }
+        if(cinemaHandsEnabled && handFrame!=null &&
+            SystemClock.elapsedRealtimeNanos()-handFrame.timeNs in 0L..300_000_000L) {
+            val visible=handFrame.hands.filter {it.shape.palmWidth>=.035f}
+            // Explicit two-hand pinch zoom. Never treat the second hand as a new click.
+            val pair=visible.takeIf {it.size>=2 && it[0].pinching && it[1].pinching}
+            val window=focused?.takeUnless {it.minimized}
+            val scale=if(pair!=null && window!=null) cinemaTwoHand.update(
+                true,pair[0].x,pair[0].y,pair[1].x,pair[1].y,now,window.widthScale)
+                else cinemaTwoHand.update(false,0f,0f,0f,0f,now,1f)
+            if(scale!=null && window!=null) {
+                if(!cinemaTwoHandUsed) {
+                    cinemaTwoHandUsed=true
+                    cinemaHandMotion.cancel()
+                    cinemaHandScrollTarget=null
+                    if(pressing) release(cancel=true)
+                    cinemaPinch.update(false,false,now)
+                }
+                window.widthScale=scale;window.heightScale=scale
+                cinemaInput.hand(now);cinemaDwell.disabled()
+                cinemaHint="Two-hand pinch • Move hands apart/together to resize"
+                return
+            }
+            // After a two-hand gesture, require BOTH hands to open before another click.
+            if(cinemaTwoHandUsed) {
+                if(visible.none {it.pinching}) cinemaTwoHandUsed=false
+                else {cinemaDwell.disabled();cinemaHint="Release both hands to finish zoom";return}
+            }
+            val hand=visible.firstOrNull {it.pinching}
+                ?: visible.firstOrNull {it.left==activeLeft}
+                ?: visible.maxByOrNull {it.shape.palmWidth}
             if(hand!=null) {
                 cinemaHandDriving=true
+                activeLeft=hand.left
                 cinemaInput.hand(now)
                 val tx=pinchX.filter((hand.x-.5f)*2*viewScaleX,handFrame.timeNs)
                 val ty=pinchY.filter((.5f-hand.y)*2*viewScaleY,handFrame.timeNs)
                 val direction=tangentRay(tx,ty,handFrame.timeNs)
-                ray=direction; updateHit(hitTest(direction))
-                pinchPoint=floatArrayOf(hand.x,hand.y); beam=null
-                (hit as? Hit.Content)?.let {target -> (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)}
+                ray=direction;updateHit(hitTest(direction))
+                pinchPoint=floatArrayOf(hand.x,hand.y);beam=null
+                (hit as? Hit.Content)?.let {target ->
+                    (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)
+                }
                 val event=cinemaPinch.update(true,hand.pinching,now)
-                if(event==CinemaPinchGate.Event.DOWN && cinemaKey(hit)!=null) press(hit,ray)
-                if(pressing) dragOrMove(direction)
-                if(event==CinemaPinchGate.Event.UP) release()
-                cinemaDwell.disabled();cinemaHint="Hand detected • Pinch to select / hold to grab"
+                if(event==CinemaPinchGate.Event.DOWN) {
+                    val target=hit
+                    if(target is Hit.Content && target.window.content is BrowserContent &&
+                        cinemaSession(target.window).surfaceEnabled) {
+                        // Delay possible link click until release so a scroll gesture cannot
+                        // accidentally navigate away from YouTube or other web pages.
+                        cinemaHandMotion.begin(hand.x,hand.y)
+                        cinemaHandScrollTarget=target
+                        cinemaHandLastMotionNs=handFrame.timeNs
+                    } else if(cinemaKey(target)!=null) press(target,direction)
+                }
+                val scrolling=cinemaHandScrollTarget
+                if(scrolling!=null && hand.pinching && handFrame.timeNs!=cinemaHandLastMotionNs) {
+                    cinemaHandLastMotionNs=handFrame.timeNs
+                    val delta=cinemaHandMotion.sample(hand.x,hand.y)
+                    if(kotlin.math.abs(delta)>.001f) {
+                        val pixels=(delta*scrolling.window.content.pixelHeight*1.25f).toInt()
+                        val pointer=hit as? Hit.Content
+                        val u=pointer?.takeIf {it.window==scrolling.window}?.u ?: scrolling.u
+                        val v=pointer?.takeIf {it.window==scrolling.window}?.v ?: scrolling.v
+                        (scrolling.window.content as? BrowserContent)?.cinemaScrollPixels(pixels,u,v)
+                    }
+                }
+                if(pressing && cinemaHandScrollTarget==null) dragOrMove(direction)
+                if(event==CinemaPinchGate.Event.UP) {
+                    val pending=cinemaHandScrollTarget
+                    if(pending!=null) {
+                        val tap=cinemaHandMotion.finish()
+                        cinemaHandScrollTarget=null
+                        // Only activate a link if it is still the SAME semantic target.
+                        val current=hit as? Hit.Content
+                        if(tap && current!=null && current.window==pending.window &&
+                            cinemaKey(current)!=null && cinemaKey(current)==cinemaKey(pending)) {
+                            press(current,direction);release()
+                        }
+                    } else if(pressing) release()
+                }
+                cinemaDwell.disabled()
+                cinemaHint=when {
+                    cinemaHandScrollTarget!=null && cinemaHandMotion.scrolling ->
+                        "Pinch scroll • Move hand up/down • Release to stop"
+                    cinemaHandScrollTarget!=null ->
+                        "Pinch held • Move vertically to scroll, release to select"
+                    pressing -> "Pinch grab • Move hand • Release to drop"
+                    else -> "Hand detected • Pinch controls / grab handle"
+                }
                 return
             }
         }
         if(cinemaHandDriving) {
             cinemaHandDriving=false
             cinemaPinch.update(false,false,now)
-            release(cancel=true);cinemaInput.clear();pinchPoint=null
+            cinemaHandMotion.cancel()
+            cinemaHandScrollTarget=null
+            cinemaTwoHand.cancel()
+            cinemaTwoHandUsed=false
+            release(cancel=true)
+            cinemaInput.clear();pinchPoint=null
         }
-        if(cinemaHandsEnabled && (handFrame==null || SystemClock.elapsedRealtimeNanos()-handFrame.timeNs>300_000_000L)) handPoints=emptyList()
+        if(cinemaHandsEnabled && (handFrame==null ||
+            SystemClock.elapsedRealtimeNanos()-handFrame.timeNs>300_000_000L)) handPoints=emptyList()
         gaze()
         val target=hit
         val direction=ray
@@ -556,7 +640,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if(BuildConfig.BE) {
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
-            cinemaPinch.update(false,false,SystemClock.uptimeMillis()); release(cancel=true);cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
+            cinemaPinch.update(false,false,SystemClock.uptimeMillis())
+            cinemaHandMotion.cancel();cinemaHandScrollTarget=null;cinemaTwoHand.cancel();cinemaTwoHandUsed=false
+            release(cancel=true);cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
         }
         surfaceView.onPause()
         six?.pause()
