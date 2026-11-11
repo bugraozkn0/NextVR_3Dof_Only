@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
  * developer.android.com/reference/android/graphics/SurfaceTexture#updateTexImage()
  * Construct, latch and sample UV on the current GL context only.
  */
-internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) {
+internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor, private val targetRotation: Int) {
     val texture = IntArray(1).also { GLES20.glGenTextures(1,it,0) }[0]
     private val surfaceTexture: SurfaceTexture
     private val surface: Surface
@@ -27,8 +27,9 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
     private val transform = FloatArray(16)
     /** CameraX's buffer-to-target rotation (also determines the displayed crop aspect). */
     @Volatile private var rotation = 0
-    /** SurfaceTexture may have already applied sensor orientation. Do not rotate it twice. */
-    @Volatile private var targetRotation = 0
+    /** SurfaceTexture may have already applied sensor orientation. Do not rotate it twice.
+     * Target display rotation is supplied by the Activity, not a restricted CameraX API.
+     */
     @Volatile private var hasCameraTransform = false
     @Volatile private var crop = android.graphics.Rect(0,0,request.resolution.width,request.resolution.height)
     /** User correction for unusual camera HAL orientation. Applied after the automatic transform. */
@@ -58,7 +59,6 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
         surface = Surface(surfaceTexture)
         request.setTransformationInfoListener(executor) { info ->
             rotation = info.rotationDegrees
-            targetRotation = info.targetRotation
             hasCameraTransform = info.hasCameraTransform()
             crop = android.graphics.Rect(info.cropRect)
         }
