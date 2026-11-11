@@ -14,7 +14,7 @@ internal object CinemaControls {
         "scrollUp", "scrollDown", "play", "seekBack", "seekForward", "fullscreen",
         "size", "distance", "curve", "recenter", "environment", "passthrough",
         "alignScreen", "roomLeft", "roomRight", "cameraRotate",
-        "website", "hands", "dwell", "sensitivity", "help", "hide")
+        "website", "hands", "dwell", "sensitivity", "diagnostics", "help", "hide")
     val video = browser.filter { it !in listOf("back", "forward", "reload", "address", "home", "scrollUp", "scrollDown", "fullscreen") }
     fun actions(isBrowser: Boolean, shown: Boolean): List<String> =
         if (!shown) (if (isBrowser) listOf("show", "scrollUp", "scrollDown", "help") else listOf("show", "help"))
@@ -34,7 +34,7 @@ internal object CinemaControls {
         "alignScreen" -> "Align screen here"; "roomLeft" -> "Room −5°"; "roomRight" -> "Room +5°"
         "cameraRotate" -> "Rotate camera +90°"; "recenter" -> "Recenter"; "environment" -> "Environment"; "passthrough" -> "Real world"
         "website" -> "Website controls"; "hands" -> "Hands (experimental)"; "dwell" -> "Dwell time"
-        "sensitivity" -> "Sensitivity"; "help" -> "Help"; "hide" -> "Hide controls"; "show" -> "Show controls"
+        "sensitivity" -> "Sensitivity"; "diagnostics" -> "Diagnostics"; "help" -> "Help"; "hide" -> "Hide controls"; "show" -> "Show controls"
         "address" -> "Address / search"; "fullscreen" -> "Fullscreen"; else -> action.replaceFirstChar { it.uppercase() }
     }
     fun draw(actions: List<String>, hovered: String?, unavailable: Set<String>, hint: String, playback: String = "unknown"): Bitmap {
