@@ -25,14 +25,21 @@ internal object CinemaBrowserScript {
       enabled:!el.disabled && el.getAttribute('aria-disabled') !== 'true',
       l:r.left/innerWidth,t:r.top/innerHeight,r:r.right/innerWidth,b:r.bottom/innerHeight};
   };
-  const scroll = direction => {
-    let el = document.elementFromPoint(innerWidth*.55,innerHeight*.55);
+  const scroll = (direction, pixels=0, u=.55, v=.55) => {
+    // Select the scrollable ancestor under the hand or gaze rather than guessing
+    // the document body; mobile YouTube and streaming sites use nested containers.
+    const x=Math.min(.98,Math.max(.02,u))*innerWidth;
+    const y=Math.min(.98,Math.max(.02,v))*innerHeight;
+    let el = document.elementFromPoint(x,y);
     while (el && el !== document.body && el !== document.documentElement) {
       if (el.scrollHeight > el.clientHeight+20 && /auto|scroll|overlay/.test(getComputedStyle(el).overflowY)) break;
       el=el.parentElement;
     }
-    const target = el && el !== document.body ? el : document.scrollingElement;
-    if (target) target.scrollBy({top:innerHeight*.65*direction,behavior:'smooth'});
+    const target = el && el !== document.body && el !== document.documentElement
+      ? el : (document.scrollingElement || document.documentElement);
+    if (!target) return;
+    if (pixels) target.scrollBy({top:Math.max(-650,Math.min(650,pixels)),behavior:'instant'});
+    else target.scrollBy({top:innerHeight*.65*direction,behavior:'smooth'});
   };
   const action = command => {
     const v=video();
@@ -56,7 +63,8 @@ internal object CinemaBrowserScript {
     if(!el) return null;
     const r=el.getBoundingClientRect();return {u:(r.left+r.width/2)/innerWidth,v:(r.top+r.height/2)/innerHeight};
   };
-  window.__nxCinema={state,hit,action,fullscreenControl};
+  window.__nxCinema={state,hit,action,fullscreenControl,
+    scrollPixels:(pixels,u,v)=>scroll(Math.sign(pixels),pixels,u,v)};
 })();
 """.trimIndent()
     fun query(u: Float, v: Float) = SETUP + "\nJSON.stringify({input:!!document.activeElement && document.activeElement.matches(\'input,textarea,[contenteditable=true]\'),media:window.__nxCinema.state(),hit:window.__nxCinema.hit($u,$v)})"
