@@ -2487,7 +2487,10 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         private var cinemaRenderFps=0f
         fun setCinemaPreview(request: androidx.camera.core.SurfaceRequest) {
             val previous=cinemaPreview
-            cinemaPreview=CinemaCameraPreview(request,ContextCompat.getMainExecutor(this@VrHomeActivity))
+            @Suppress("DEPRECATION")
+            val targetDisplayRotation=windowManager.defaultDisplay.rotation
+            cinemaPreview=CinemaCameraPreview(request,
+                ContextCompat.getMainExecutor(this@VrHomeActivity),targetDisplayRotation)
             if(previous!=null) GLES20.glDeleteTextures(1,intArrayOf(previous.texture),0)
         }
         private var hasCamera = false
