@@ -230,6 +230,17 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaHint="Two-hand pinch • Move hands apart/together to resize"
                 return
             }
+            // The first 160ms are arming time, not an opportunity for a
+            // one-hand click. Cancel an existing press if the second pinch starts.
+            if(pair!=null && cinemaTwoHand.blocking) {
+                if(pressing) release(cancel=true)
+                cinemaHandMotion.cancel()
+                cinemaHandScrollTarget=null
+                cinemaPinch.update(false,false,now)
+                cinemaInput.hand(now);cinemaDwell.disabled()
+                cinemaHint="Two-hand pinch • Hold to start resizing"
+                return
+            }
             // After a two-hand gesture, require BOTH hands to open before another click.
             if(cinemaTwoHandUsed) {
                 if(visible.none {it.pinching}) cinemaTwoHandUsed=false
