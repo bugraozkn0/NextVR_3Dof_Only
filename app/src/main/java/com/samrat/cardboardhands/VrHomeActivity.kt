@@ -211,6 +211,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 val direction=tangentRay(tx,ty,handFrame.timeNs)
                 ray=direction;updateHit(hitTest(direction))
                 pinchPoint=floatArrayOf(hand.x,hand.y);beam=null
+                pinching=hand.pinching
                 (hit as? Hit.Content)?.let {target ->
                     (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)
                 }
@@ -2374,6 +2375,46 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         private var cardboardFramebuffer = 0
         private var cinemaPreview: CinemaCameraPreview? = null
         private var cinemaRenderEpoch=SystemClock.uptimeMillis()
+        /** Interpolated only for visual display; gesture detection uses raw ML frames. */
+        private val cinemaVisualHands=ArrayList<FloatArray>()
+        private var cinemaVisualAt=0L
+        private val cinemaBones=intArrayOf(
+            0,1,1,2,2,3,3,4,0,5,5,6,6,7,7,8,0,9,9,10,10,11,11,12,
+            0,13,13,14,14,15,15,16,0,17,17,18,18,19,19,20,
+            5,9,9,13,13,17,17,5
+        )
+        private fun advanceCinemaHandVisuals() {
+            val targets=if(cinemaHandsEnabled) handPoints else emptyList()
+            val time=SystemClock.uptimeMillis()
+            val dt=(time-cinemaVisualAt).coerceIn(0L,100L).toFloat()
+            cinemaVisualAt=time
+            if(targets.size!=cinemaVisualHands.size ||
+                targets.any {it.size<63}) {
+                cinemaVisualHands.clear()
+                targets.filter {it.size>=63}.forEach {cinemaVisualHands+=it.copyOf()}
+                return
+            }
+            val alpha=(dt/53f).coerceIn(.06f,.56f)
+            targets.forEachIndexed {i,src ->
+                val dest=cinemaVisualHands[i]
+                for(k in 0 until 63) dest[k]+=(src[k]-dest[k])*alpha
+            }
+        }
+        private fun drawCinemaHandLines(position:Int) {
+            if(cinemaVisualHands.isEmpty()) return
+            val vertices=FloatArray(cinemaVisualHands.size*cinemaBones.size*3)
+            var o=0
+            for(hand in cinemaVisualHands) for(point in cinemaBones) {
+                vertices[o++]=(hand[point*3]-.5f)*2f*viewScaleX
+                vertices[o++]=(.5f-hand[point*3+1])*2f*viewScaleY
+                vertices[o++]=-1f
+            }
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProgram,"uColor"),
+                .70f,.88f,1f,.85f)
+            GLES20.glLineWidth(2f)
+            drawArray(vertices,GLES20.GL_LINES,position)
+            GLES20.glLineWidth(1f)
+        }
         private var cinemaRenderFrames=0
         private var cinemaRenderFps=0f
         fun setCinemaPreview(request: androidx.camera.core.SurfaceRequest) {
@@ -2632,6 +2673,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             followWithPanel()
             if (BuildConfig.BE) {
                 updateCinemaGaze()
+                advanceCinemaHandVisuals()
                 cinemaRenderFrames++
                 val now=SystemClock.uptimeMillis()
                 if(now-cinemaRenderEpoch>=1000) {cinemaRenderFps=cinemaRenderFrames*1000f/(now-cinemaRenderEpoch);cinemaRenderFrames=0;cinemaRenderEpoch=now}
@@ -3263,6 +3305,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
          * clicks. With a stencil every pixel of a hand is drawn once, so the see-through fill is even.
          */
         private fun drawHandSkeletons(position: Int) {
+            // Cinema renders a lightweight, time-smoothed skeleton instead of generating
+            // thousands of triangles twice per VR frame; saved GPU work benefits video.
+            if(BuildConfig.BE) {drawCinemaHandLines(position);return}
             val hands = handPoints
             if (hands.isEmpty()) return
             val color = GLES20.glGetUniformLocation(colorProgram, "uColor")
