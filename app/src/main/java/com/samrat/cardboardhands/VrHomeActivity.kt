@@ -108,6 +108,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private val cinemaHandMotion = CinemaHandMotion()
     private val cinemaTwoHand = CinemaTwoHandScale()
     private var cinemaHandScrollTarget: Hit.Content? = null
+    private var cinemaAlignWindow: VrWindow? = null
+    private var cinemaAlignStartRay: FloatArray? = null
+    private var cinemaAlignStableRay: FloatArray? = null
+    private var cinemaAlignStableAt = 0L
+    private var cinemaAlignMoved = false
     private var cinemaHandLastMotionNs = -1L
     private var cinemaTwoHandUsed = false
     @Volatile private var cinemaHandsEnabled = false
@@ -165,6 +170,35 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun updateCinemaGaze() {
         if (!BuildConfig.BE) return
         val now=SystemClock.uptimeMillis()
+        // Two-stage screen placement: choose Align, then look at the desired place
+        // in the panorama. The user must actually move away from the button and
+        // hold steady before the window is placed, with no gamepad or hands needed.
+        cinemaAlignWindow?.let { window ->
+            val pose=FloatArray(16).also {tracker.copyHead(it)}
+            val forward=FloatArray(4)
+            Matrix.multiplyMV(forward,0,pose,0,floatArrayOf(0f,0f,-1f,0f),0)
+            val start=cinemaAlignStartRay
+            if(start!=null && kotlin.math.hypot(forward[0]-start[0],forward[2]-start[2])>.10f)
+                cinemaAlignMoved=true
+            val last=cinemaAlignStableRay
+            if(last==null || kotlin.math.abs(forward[0]-last[0])+
+                kotlin.math.abs(forward[1]-last[1])+
+                kotlin.math.abs(forward[2]-last[2])>.025f) {
+                cinemaAlignStableAt=now
+                cinemaAlignStableRay=forward
+            }
+            cinemaDwell.disabled()
+            cinemaHint=if(!cinemaAlignMoved) "Screen placement • Look away toward the cinema wall"
+                else "Screen placement • Hold your head still to confirm"
+            if(cinemaAlignMoved && now-cinemaAlignStableAt>=1050L) {
+                window.yaw=yawOf(forward)
+                window.height=heightAt(forward,windowRadius).coerceIn(-.7f,.7f)
+                window.arcDegrees=0f
+                cinemaAlignWindow=null;cinemaAlignStartRay=null;cinemaAlignStableRay=null
+                cinemaHint="Movie screen placed • Pinch its handle for fine adjustments"
+            }
+            return
+        }
         // Media availability is independent of whichever input source currently owns the cursor.
         windows.filter { !it.minimized }.forEach { window ->
             val browser=window.content as? BrowserContent ?: return@forEach
@@ -338,15 +372,15 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaHint="Room rotated to "+cinemaEnvironmentHeading.toInt()+"° • Use Align screen here"
             }
             "alignScreen" -> {
-                // User looks at the intended cinema screen in the panorama, then chooses Align.
-                // Never rotate the panorama together with windows: each has its own orientation.
                 val pose=FloatArray(16).also {tracker.copyHead(it)}
                 val forward=FloatArray(4)
                 Matrix.multiplyMV(forward,0,pose,0,floatArrayOf(0f,0f,-1f,0f),0)
-                window.yaw=yawOf(forward)
-                window.height=0f
-                window.arcDegrees=0f
-                cinemaHint="Screen aligned to gaze • Pinch its handle for fine adjustments"
+                cinemaAlignWindow=window
+                cinemaAlignStartRay=forward
+                cinemaAlignStableRay=null
+                cinemaAlignStableAt=0L
+                cinemaAlignMoved=false
+                cinemaHint="Look at the panorama screen and hold steady to place the movie"
             }
             "cameraRotate" -> {
                 cinemaCameraCorrection=(cinemaCameraCorrection+90)%360
@@ -666,6 +700,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
             cinemaPinch.update(false,false,SystemClock.uptimeMillis())
+            cinemaAlignWindow=null;cinemaAlignStartRay=null;cinemaAlignStableRay=null
             cinemaHandMotion.cancel();cinemaHandScrollTarget=null;cinemaTwoHand.cancel();cinemaTwoHandUsed=false
             release(cancel=true);cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
         }
