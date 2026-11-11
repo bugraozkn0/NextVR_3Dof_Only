@@ -73,22 +73,20 @@ android {
             buildConfigField("boolean", "BE", "false")
             resValue("string", "app_label", "NextVR Lite")
         }
-        // BE: no camera at all. A dot in the middle of the view aims, a tap on the screen clicks,
-        // the room is black; no game patching, no friends — VR for watching and browsing.
+        // Cinema: 3DoF gaze controls, browser and media, with optional camera passthrough.
         create("be") {
             dimension = "edition"
-            applicationIdSuffix = ".be"
-            versionNameSuffix = "$commitSuffix-be"
+            applicationIdSuffix = ".cinema"
+            versionNameSuffix = "$commitSuffix-cinema"
             buildConfigField("boolean", "LITE", "true")
             buildConfigField("boolean", "BE", "true")
-            resValue("string", "app_label", "NextVR BE")
+            resValue("string", "app_label", "NextVR Cinema")
         }
     }
 
-    // One PhoneXR key everywhere (local builds, CI, patched games): games signed with it may start
-    // hand tracking through the signature permission START_HAND_TRACKING.
+    // Keep upstream signing for Full/Lite; Cinema uses the build machine's debug key.
     signingConfigs {
-        getByName("debug") {
+        create("upstreamDebug") {
             storeFile = file("src/main/assets/phonexr-signing.p12")
             storeType = "pkcs12"
             storePassword = "android"
@@ -98,6 +96,7 @@ android {
     }
 
     buildTypes {
+        debug { signingConfig = null }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -106,6 +105,10 @@ android {
             )
         }
     }
+
+    productFlavors.getByName("full").signingConfig = signingConfigs.getByName("upstreamDebug")
+    productFlavors.getByName("lite").signingConfig = signingConfigs.getByName("upstreamDebug")
+    productFlavors.getByName("be").signingConfig = signingConfigs.getByName("debug")
 
     // libvrapi.so of the Gear VR adapter, built by gearvr-shim (see gearvr-shim/STATUS.txt).
     // A local build wins; the checked-in copy lets CI (and a fresh clone) package the adapter.
@@ -177,3 +180,4 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+

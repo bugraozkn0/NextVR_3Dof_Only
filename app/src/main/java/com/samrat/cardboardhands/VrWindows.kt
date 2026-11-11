@@ -78,6 +78,7 @@ class VrWindow(val id: String, val title: String, val iconId: String, val conten
         fun attach(context: Context, texture: SurfaceTexture?, onReady: () -> Unit)
         /** A new bitmap to upload, for bitmap content. */
         fun takeBitmap(): Bitmap? = null
+        fun restoreTexture(context:Context,texture:SurfaceTexture?,onReady:()->Unit) = attach(context,texture,onReady)
         /** Touch at 0..1 window coordinates. Action is MotionEvent.ACTION_DOWN / MOVE / UP. */
         fun touch(action: Int, u: Float, v: Float)
         fun key(event: KeyEvent) = Unit
@@ -142,7 +143,8 @@ class BrowserContent(
     /** A site shown as an app (Instagram, Discord): no address bar or tabs, only the window's pill. */
     var appMode: Boolean = false
     override val pixelWidth = 1600
-    override val pixelHeight = 1000
+    @Volatile private var cinemaWide=false
+    override val pixelHeight get() = if(cinemaWide) 900 else 1000
     override val external = true
     private val main = Handler(Looper.getMainLooper())
 
@@ -156,16 +158,138 @@ class BrowserContent(
     }
     private var display: VirtualDisplay? = null
     private var presentation: Presentation? = null
+    private var cinemaHost: android.widget.FrameLayout? = null
+    private var cinemaFullscreen: android.view.View? = null
+    private var cinemaFullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    val cinemaVideoPlaying: Boolean get() = cinemaPlayback == "playing" || cinemaPlayback == "buffering"
+
+    private fun cinemaMount(view: android.view.View) {
+        val host = cinemaHost ?: return
+        cinemaHideFullscreen(notifyPage = true)
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        host.removeAllViews()
+        host.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** Native fullscreen stays on the browser's virtual screen, inside the VR window. */
+    private fun cinemaShowFullscreen(view: android.view.View, callback: WebChromeClient.CustomViewCallback) {
+        val host = cinemaHost ?: run { callback.onCustomViewHidden(); return }
+        if (cinemaFullscreen != null) { callback.onCustomViewHidden(); return }
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        cinemaFullscreen = view
+        cinemaFullscreenCallback = callback
+        presentation?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        host.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun cinemaHideFullscreen(notifyPage: Boolean = false) {
+        val view = cinemaFullscreen ?: return
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        cinemaFullscreen = null
+        presentation?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        val callback = cinemaFullscreenCallback
+        cinemaFullscreenCallback = null
+        if (notifyPage) callback?.onCustomViewHidden()
+    }
+
+    fun cinemaScroll(direction: Int) {
+        main.post {
+            val web = webView ?: return@post
+            val js = CinemaBrowserScript.action(if(direction<0) "scrollUp" else "scrollDown")
+            web.evaluateJavascript(js, null)
+        }
+    }
+    /** A pinch-and-vertical-swipe scrolls the container under the hand, not the
+     * embedded video or an unrelated sidebar. Never synthesizes a page click.
+     */
+    fun cinemaScrollPixels(pixels:Int, u:Float, v:Float) {
+        if (!BuildConfig.BE || pixels==0) return
+        val safePixels=pixels.coerceIn(-650,650)
+        val safeU=u.coerceIn(0f,1f)
+        val safeV=v.coerceIn(0f,1f)
+        main.post {
+            webView?.evaluateJavascript(
+                "window.__nxCinema && window.__nxCinema.scrollPixels($safePixels,$safeU,$safeV)",null
+            )
+        }
+    }
+
     /** A tab: its own WebView, where it is and what it is called. Changed on the main thread only. */
-    private class Tab(var view: WebView, @Volatile var url: String, @Volatile var title: String = "")
+    private class Tab(var view: WebView, @Volatile var url: String, @Volatile var title: String = "") {
+        @Volatile var cinemaPlaying = false
+    }
 
     private val tabs = java.util.concurrent.CopyOnWriteArrayList<Tab>()
     @Volatile private var active = 0
+    data class CinemaTarget(val id: String, val label: String, val enabled: Boolean, val left: Float, val top: Float, val right: Float, val bottom: Float, val at: Long)
+    @Volatile var cinemaTarget: CinemaTarget? = null
+        private set
+    @Volatile var cinemaControllable = false
+        private set
+    @Volatile var cinemaPlayback = "unknown"
+        private set
+    private var lastCinemaProbe = 0L
+    @Volatile private var cinemaEpoch = 0
+    fun cinemaViewport(wide:Boolean) {
+        if(!BuildConfig.BE) return
+        cinemaWide=wide
+        main.post {
+            texture?.setDefaultBufferSize(pixelWidth,pixelHeight)
+            display?.resize(pixelWidth,pixelHeight,280)
+            touches=TouchEvents(pixelWidth,pixelHeight,InputDevice.SOURCE_TOUCHSCREEN)
+        }
+    }
+    fun cinemaProbe(u: Float = -1f, v: Float = -1f) {
+        val now = SystemClock.uptimeMillis()
+        if (!BuildConfig.BE || now-lastCinemaProbe < 100) return
+        lastCinemaProbe = now
+        val epoch = cinemaEpoch
+        main.post {
+            val owner = webView ?: return@post
+            owner.evaluateJavascript(CinemaBrowserScript.query(u,v)) { value ->
+                if (epoch != cinemaEpoch || owner !== webView) return@evaluateJavascript
+                runCatching {
+                    val decoded = org.json.JSONTokener(value).nextValue() as? String ?: return@runCatching
+                    val result = org.json.JSONObject(decoded)
+                    val media = result.getJSONObject("media")
+                    cinemaControllable = media.optBoolean("controllable")
+                    cinemaPlayback = media.optString("playback","unknown")
+                    val item = result.optJSONObject("hit")
+                    cinemaTarget = item?.let { CinemaTarget(it.getString("id"),it.optString("label"),it.optBoolean("enabled"),
+                        it.getDouble("l").toFloat(),it.getDouble("t").toFloat(),it.getDouble("r").toFloat(),it.getDouble("b").toFloat(),SystemClock.uptimeMillis()) }
+                    keyboard = result.optBoolean("input")
+                }.onFailure { cinemaTarget=null; cinemaControllable=false;cinemaPlayback="unknown" }
+            }
+        }
+    }
+    fun cinemaAction(action: String) {
+        main.post {
+            if (action == "fullscreen" && cinemaFullscreen != null) cinemaHideFullscreen(notifyPage=true)
+            else if(action=="fullscreen") {
+                val owner=webView?:return@post
+                val epoch=cinemaEpoch
+                // A WebView touch preserves user activation; evaluateJavascript(requestFullscreen)
+                // alone is rejected by many players. Only an explicitly labelled button is targeted.
+                owner.evaluateJavascript(CinemaBrowserScript.SETUP+"\nJSON.stringify(window.__nxCinema.fullscreenControl())") {value ->
+                    if(epoch!=cinemaEpoch || owner!==webView) return@evaluateJavascript
+                    val point=runCatching {org.json.JSONObject(org.json.JSONTokener(value).nextValue() as String)}.getOrNull()
+                    val u=point?.optDouble("u")?.toFloat()?:-1f
+                    val v=point?.optDouble("v")?.toFloat()?:-1f
+                    if(u in 0f..1f && v in 0f..1f) {
+                        for(a in intArrayOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                            val event=touches.event(a,u,v)
+                            presentation?.window?.decorView?.dispatchTouchEvent(event);event.recycle()
+                        }
+                    } else owner.evaluateJavascript(CinemaBrowserScript.action(action),null)
+                }
+            } else webView?.evaluateJavascript(CinemaBrowserScript.action(action),null)
+        }
+    }
     /** The page on screen: the chosen tab's WebView. */
     private val webView: WebView? get() = tabs.getOrNull(active)?.view
     private var texture: SurfaceTexture? = null
     private var screen = Size(2400, 1080)
-    private val touches = TouchEvents(pixelWidth, pixelHeight, InputDevice.SOURCE_TOUCHSCREEN)
+    private var touches = TouchEvents(pixelWidth, pixelHeight, InputDevice.SOURCE_TOUCHSCREEN)
     private var immersiveTouches = TouchEvents(screen.width, screen.height, InputDevice.SOURCE_TOUCHSCREEN)
     @Volatile private var xr = false
     @Volatile private var ar = false
@@ -221,8 +345,10 @@ class BrowserContent(
     private fun showTab(index: Int) {
         if (index !in tabs.indices) return
         setImmersive(false)
+        cinemaHideFullscreen(notifyPage = true)
         active = index
-        presentation?.setContentView(tabs[index].view)
+        cinemaEpoch++; cinemaTarget=null;cinemaPlayback="unknown";cinemaControllable=false
+        cinemaMount(tabs[index].view)
         keyboard = false
         version++
     }
@@ -252,9 +378,10 @@ class BrowserContent(
     private fun ownPage() = currentUrl.startsWith("file:///android_asset/")
 
     /** Called from the page script: text fields and WebXR sessions. */
-    private inner class Bridge {
+    private inner class Bridge(private val owner: WebView) {
         @JavascriptInterface fun keyboard(show: Boolean) { keyboard = show }
         @JavascriptInterface fun video(state: String) { onVideo?.invoke(state) }
+        @JavascriptInterface fun cinemaMedia(playing: Boolean) { tabOf(owner)?.cinemaPlaying = playing }
         @JavascriptInterface fun enterXr(url: String) { onWebXr(url) }
         @JavascriptInterface fun immersive(on: Boolean, augmented: Boolean) { setImmersive(on, augmented) }
         /** Before an immersive session: the page goes to the standard size and gets it as "WxH". */
@@ -338,11 +465,15 @@ class BrowserContent(
     override fun toolbarAction(action: String) {
         main.post {
             val view = webView ?: return@post
+            if (action == "back" && cinemaFullscreen != null) {
+                cinemaHideFullscreen(notifyPage = true)
+                return@post
+            }
             when (action) {
                 "back" -> if (view.canGoBack()) view.goBack()
                 "forward" -> if (view.canGoForward()) view.goForward()
                 "reload" -> view.reload()
-                "home" -> view.loadUrl(HOME)
+                "home" -> view.loadUrl(if (BuildConfig.BE) "file:///android_asset/cinema-home.html" else HOME)
                 "newtab" -> addTab(HOME)
                 else -> when {
                     action.startsWith("tab:") -> action.removePrefix("tab:").toIntOrNull()?.let { showTab(it) }
@@ -359,6 +490,17 @@ class BrowserContent(
                     }
                 }
             }
+        }
+    }
+
+    override fun restoreTexture(context:Context,texture:SurfaceTexture?,onReady:()->Unit) {
+        this.texture=texture
+        texture?.setDefaultBufferSize(pixelWidth,pixelHeight)
+        main.post {
+            val surface=Surface(texture)
+            display?.surface=surface
+            surface.release()
+            onReady()
         }
     }
 
@@ -385,7 +527,10 @@ class BrowserContent(
             presentation = Presentation(context, created.display).apply {
                 // Translucent, so an immersive-ar page can show the camera where it draws nothing.
                 window?.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
-                setContentView(view)
+                val container = android.widget.FrameLayout(context)
+                cinemaHost = container
+                container.addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
+                setContentView(container)
                 show()
             }
             onReady()
@@ -396,9 +541,17 @@ class BrowserContent(
     @SuppressLint("SetJavaScriptEnabled")
     private fun buildWebView(context: Context, url: String): WebView {
         // Debug builds: pages can be inspected from chrome://inspect on the computer.
-        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+        if (BuildConfig.DEBUG && !BuildConfig.BE) WebView.setWebContentsDebuggingEnabled(true)
         return WebView(context).apply {
                 settings.javaScriptEnabled = true
+                if(BuildConfig.BE) {
+                    settings.allowFileAccess=false
+                    settings.allowContentAccess=false
+                    @Suppress("DEPRECATION")
+                    settings.allowFileAccessFromFileURLs=false
+                    @Suppress("DEPRECATION")
+                    settings.allowUniversalAccessFromFileURLs=false
+                }
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
                 webViewClient = object : WebViewClient() {
@@ -417,16 +570,20 @@ class BrowserContent(
                     }
 
                     override fun onPageStarted(view: WebView, address: String?, favicon: Bitmap?) {
+                        cinemaEpoch++; cinemaTarget=null;cinemaPlayback="unknown";cinemaControllable=false
+                        tabOf(view)?.cinemaPlaying = false
+                        if (view === webView) cinemaHideFullscreen(notifyPage = true)
                         keyboard = false
                         setImmersive(false)
                         // Old WebView without document-start scripts: as early as it can be.
-                        if (!webXrAtStart) view.evaluateJavascript(webXrScript(view.context), null)
+                        if (!webXrAtStart && !BuildConfig.BE) view.evaluateJavascript(webXrScript(view.context), null)
                         view.evaluateJavascript(PAGE_SCRIPT, null)
                     }
 
                     override fun onPageCommitVisible(view: WebView, address: String?) = view.evaluateJavascript(PAGE_SCRIPT, null)
 
                     override fun onPageFinished(view: WebView, address: String?) {
+                        if (BuildConfig.BE) view.evaluateJavascript(CinemaBrowserScript.SETUP, null)
                         view.evaluateJavascript(PAGE_SCRIPT, null)
                         togetherScript?.let { view.evaluateJavascript(it, null) }
                         val title = view.title.orEmpty()
@@ -444,19 +601,29 @@ class BrowserContent(
                             val tab = tabOf(view)
                             val fresh = buildWebView(view.context, tab?.url ?: currentUrl)
                             tab?.view = fresh
-                            if (tab == tabs.getOrNull(active)) presentation?.setContentView(fresh)
+                            if (tab == tabs.getOrNull(active)) cinemaMount(fresh)
                             view.destroy()
                         }
                         return true
                     }
                 }
                 webChromeClient = object : WebChromeClient() {
+                    override fun onShowCustomView(view: android.view.View, callback: WebChromeClient.CustomViewCallback) {
+                        main.post { cinemaShowFullscreen(view, callback) }
+                    }
+
+                    override fun onHideCustomView() {
+                        main.post { cinemaHideFullscreen() }
+                    }
+
                     override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean {
                         if (message.message().startsWith("PhoneXR")) android.util.Log.i("PhoneXR-WebXR", message.message())
                         return false
                     }
                 }
-                addJavascriptInterface(Bridge(), "PhoneXR")
+                // addJavascriptInterface cannot authenticate a calling iframe. Cinema has no privileged bridge.
+                // https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges
+                if (!BuildConfig.BE) addJavascriptInterface(Bridge(this), "PhoneXR")
                 // Downloads go to Downloads/PhoneXR with the system's download manager.
                 setDownloadListener { url, agent, disposition, mime, _ ->
                     val name = android.webkit.URLUtil.guessFileName(url, disposition, mime)
@@ -480,11 +647,11 @@ class BrowserContent(
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = BrowserData.desktop(context)
                 settings.setSupportMultipleWindows(false)
-                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                if (!BuildConfig.BE && androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     androidx.webkit.WebViewCompat.addDocumentStartJavaScript(this, webXrScript(context), setOf("*"))
                     webXrAtStart = true
                 }
-                loadUrl(url)
+                loadUrl(if (BuildConfig.BE && url == HOME) "file:///android_asset/cinema-home.html" else url)
             }
     }
 
@@ -549,6 +716,8 @@ class BrowserContent(
 
     override fun release() {
         main.post {
+            cinemaHideFullscreen(notifyPage = true)
+            cinemaHost = null
             presentation?.dismiss()
             tabs.forEach { it.view.destroy() }
             display?.release()
@@ -1099,3 +1268,4 @@ class PhotosContent(
         list
     }.getOrDefault(emptyList())
 }
+

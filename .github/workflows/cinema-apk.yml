@@ -1,0 +1,66 @@
+name: Cinema APK
+on:
+  push:
+    branches: [main, feature/cinema-passthrough-mvp]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cinema-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: app/src/be/assets/environments
+          key: cinema-panorama-2k-v2-${{ hashFiles('scripts/prepare_cinema_environments.py', 'scripts/CinemaJpeg.java') }}
+      - name: Prepare genuine CC0 panoramas (runner only)
+        run: python3 scripts/prepare_cinema_environments.py
+      - name: Unit tests and debug APK
+        run: ./gradlew :app:testBeDebugUnitTest :app:assembleBeDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Summarize executed BE tests
+        run: python3 scripts/summarize_cinema_tests.py
+      - name: Android lint (report legacy source issues separately)
+        continue-on-error: true
+        run: ./gradlew :app:lintBeDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-v2-test-evidence
+          path: |
+            app/build/test-results/testBeDebugUnitTest/
+            app/build/reports/lint-results-beDebug.html
+            app/build/reports/lint-results-beDebug.xml
+            app/src/be/assets/environments/credits.json
+          if-no-files-found: warn
+      - name: Verify installable APK and record checksum
+        run: |
+          APK=app/build/outputs/apk/be/debug/app-be-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | grep -E "package:|launchable-activity:|sdkVersion:|targetSdkVersion:"
+          sha256sum "$APK"
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cinema-3dof-v2-debug-apk
+          path: app/build/outputs/apk/be/debug/app-be-debug.apk
+          if-no-files-found: error
+          retention-days: 14
