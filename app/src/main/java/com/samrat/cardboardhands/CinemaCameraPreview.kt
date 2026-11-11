@@ -25,8 +25,15 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
     private var latched = 0L
     private var epoch = SystemClock.elapsedRealtime()
     private val transform = FloatArray(16)
+    /** CameraX's buffer-to-target rotation (also determines the displayed crop aspect). */
     @Volatile private var rotation = 0
+    /** SurfaceTexture may have already applied sensor orientation. Do not rotate it twice. */
+    @Volatile private var targetRotation = 0
+    @Volatile private var hasCameraTransform = false
     @Volatile private var crop = android.graphics.Rect(0,0,request.resolution.width,request.resolution.height)
+    /** User correction for unusual camera HAL orientation. Applied after the automatic transform. */
+    @Volatile var correctionDegrees = 0
+    @Volatile var mirror = false
     @Volatile var captureFps = 0f; private set
     @Volatile var previewFps = 0f; private set
     @Volatile var bufferAgeMs = 0f; private set
@@ -46,7 +53,10 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
         }
         surface = Surface(surfaceTexture)
         request.setTransformationInfoListener(executor) { info ->
-            rotation = info.rotationDegrees; crop = android.graphics.Rect(info.cropRect)
+            rotation = info.rotationDegrees
+            targetRotation = info.targetRotation
+            hasCameraTransform = info.hasCameraTransform()
+            crop = android.graphics.Rect(info.cropRect)
         }
         request.provideSurface(surface,executor) {
             surface.release(); surfaceTexture.release()
@@ -75,13 +85,38 @@ internal class CinemaCameraPreview(request: SurfaceRequest, executor: Executor) 
         val a=aspect
         val us=if(eyeAspect<a) eyeAspect/a else 1f
         val vs=if(eyeAspect>a) a/eyeAspect else 1f
+        val correctedRotation = (CinemaCameraUv.remainingRotation(rotation, targetRotation, hasCameraTransform)
+            + correctionDegrees).mod(360)
+        val validCrop = crop.takeIf { it.width() > 0 && it.height() > 0 }
+            ?: android.graphics.Rect(0, 0, width, height)
         fun point(x:Float,y:Float,u:Float,v:Float):FloatArray {
-            val du=.5f+(u-.5f)*us; val dv=.5f+(v-.5f)*vs
-            val (rx,ry)=when(rotation) {90->dv to (1-du);180->(1-du) to (1-dv);270->(1-dv) to du;else->du to dv}
-            val sx=(crop.left+rx*crop.width())/width
-            val sy=1f-(crop.top+ry*crop.height())/height
+            val dx=.5f+(u-.5f)*us
+            val dy=.5f+(v-.5f)*vs
+            // Apply user mirroring in DISPLAY space, then one source UV rotation.
+            val (rx,ry)=CinemaCameraUv.rotate(if(mirror) 1f-dx else dx,dy,correctedRotation)
+            val sx=(validCrop.left+rx*validCrop.width())/width
+            val sy=1f-(validCrop.top+ry*validCrop.height())/height
             return floatArrayOf(x,y,0f,transform[0]*sx+transform[4]*sy+transform[12],transform[1]*sx+transform[5]*sy+transform[13])
         }
         return point(-1f,-1f,0f,1f)+point(1f,-1f,1f,1f)+point(-1f,1f,0f,0f)+point(1f,1f,1f,0f)
+    }
+}
+
+/** Pure orientation math for deterministic tests, independent of Android's GL context.
+ * CameraX Preview documentation: the SurfaceTexture transform already includes the
+ * camera sensor transform when hasCameraTransform=true; only target-display rotation
+ * remains. Otherwise CameraX rotationDegrees corrects the untransformed buffer.
+ */
+internal object CinemaCameraUv {
+    fun remainingRotation(sourceDegrees:Int, targetRotation:Int, hasCameraTransform:Boolean):Int =
+        if (hasCameraTransform) (360 - ((targetRotation.mod(4)) * 90)).mod(360)
+        else sourceDegrees.mod(360)
+
+    /** Inverse mapping: screen-space UV -> texture-space UV (clockwise image rotation). */
+    fun rotate(u:Float,v:Float,degrees:Int):Pair<Float,Float> = when(degrees.mod(360)) {
+        90 -> v to (1f-u)
+        180 -> (1f-u) to (1f-v)
+        270 -> (1f-v) to u
+        else -> u to v
     }
 }
