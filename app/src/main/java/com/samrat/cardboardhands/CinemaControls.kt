@@ -20,11 +20,14 @@ internal object CinemaControls {
         if (!shown) (if (isBrowser) listOf("show", "scrollUp", "scrollDown", "help") else listOf("show", "help"))
         else if (isBrowser) browser else video
     fun hit(u: Float, v: Float, actions: List<String>): String? {
-        if (u !in 0f..1f || v !in 0f..1f) return null
+        // The bottom 80/480 pixels contain help text, not buttons.
+        // Never execute the last-row action when someone looks at a hint.
+        val gridV=v*480f/400f
+        if (u !in 0f..1f || gridV !in 0f..1f || gridV>=1f || actions.isEmpty()) return null
         val cols = if (actions.size > 6) 6 else actions.size
         val rows = (actions.size + cols - 1) / cols
         val col = (u * cols).toInt().coerceAtMost(cols - 1)
-        val row = (v * rows).toInt().coerceAtMost(rows - 1)
+        val row = (gridV * rows).toInt().coerceAtMost(rows - 1)
         return actions.getOrNull(row * cols + col)
     }
     fun label(action: String) = when(action) {
