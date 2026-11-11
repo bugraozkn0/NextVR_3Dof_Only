@@ -199,6 +199,20 @@ class BrowserContent(
             web.evaluateJavascript(js, null)
         }
     }
+    /** A pinch-and-vertical-swipe scrolls the container under the hand, not the
+     * embedded video or an unrelated sidebar. Never synthesizes a page click.
+     */
+    fun cinemaScrollPixels(pixels:Int, u:Float, v:Float) {
+        if (!BuildConfig.BE || pixels==0) return
+        val safePixels=pixels.coerceIn(-650,650)
+        val safeU=u.coerceIn(0f,1f)
+        val safeV=v.coerceIn(0f,1f)
+        main.post {
+            webView?.evaluateJavascript(
+                "window.__nxCinema && window.__nxCinema.scrollPixels($safePixels,$safeU,$safeV)",null
+            )
+        }
+    }
 
     /** A tab: its own WebView, where it is and what it is called. Changed on the main thread only. */
     private class Tab(var view: WebView, @Volatile var url: String, @Volatile var title: String = "") {
