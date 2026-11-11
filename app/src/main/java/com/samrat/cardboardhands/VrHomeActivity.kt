@@ -1185,12 +1185,28 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 analysis.setAnalyzer(cameraExecutor) { image ->
                     try {
                         val now=SystemClock.uptimeMillis()
-                        if(cinemaHandsEnabled && now-cinemaLastAnalysis>=83 && pinchHands!=null && busy.compareAndSet(false,true)) {
+                        // Inference is independent of the fast camera preview. Adapt sampling to
+                        // measured CPU model cost rather than forcing an unsustainable frame rate.
+                        val sampleInterval=when {
+                            cinemaAnalysisMs>95f -> 110L
+                            cinemaAnalysisMs>60f -> 80L
+                            else -> 50L
+                        }
+                        if(cinemaHandsEnabled && now-cinemaLastAnalysis>=sampleInterval && pinchHands!=null && busy.compareAndSet(false,true)) {
                             cinemaLastAnalysis=now
                             val began=SystemClock.elapsedRealtimeNanos()
                             val raw=image.toBitmap()
-                            val upright=raw.rotate(image.imageInfo.rotationDegrees)
-                            if(raw!==upright) raw.recycle()
+                            val crop=image.cropRect
+                            // CameraX UseCaseGroup shares viewport cropping with Preview, so hand
+                            // landmarks and the image on screen refer to the same visible area.
+                            val region=if(crop.width()>0 && crop.height()>0 &&
+                                crop.left>=0 && crop.top>=0 && crop.right<=raw.width && crop.bottom<=raw.height &&
+                                (crop.width()!=raw.width || crop.height()!=raw.height))
+                                Bitmap.createBitmap(raw,crop.left,crop.top,crop.width(),crop.height())
+                            else raw
+                            if(region!==raw) raw.recycle()
+                            val upright=region.rotate(image.imageInfo.rotationDegrees)
+                            if(region!==upright) region.recycle()
                             val timestamp=image.imageInfo.timestamp/1_000_000L
                             trackingExecutor.execute {
                                 try {pinchHands?.detect(upright,timestamp,scaleX=viewScaleX,scaleY=viewScaleY)?.let {if(cinemaHandsEnabled && cinemaCameraActive) {cinemaHandFrame=it;handPoints=it.points}}}
@@ -1208,7 +1224,10 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 }
                 cases+=analysis
             }
-            runCatching {provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,*cases.toTypedArray())}
+            val group=androidx.camera.core.UseCaseGroup.Builder()
+                .setViewPort(androidx.camera.core.ViewPort.Builder(android.util.Rational(16,9),rotation).build())
+                .apply {cases.forEach {addUseCase(it)}}.build()
+            runCatching {provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,group)}
                 .onSuccess {camera ->
                     cinemaCameraActive=true
                     camera.cameraInfo.cameraState.observe(this) {state ->
