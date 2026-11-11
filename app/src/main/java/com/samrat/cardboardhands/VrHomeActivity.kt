@@ -556,7 +556,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if(BuildConfig.BE) {
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
-            cinemaPinch.update(false,false,SystemClock.uptimeMillis()); release();cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
+            cinemaPinch.update(false,false,SystemClock.uptimeMillis()); release(cancel=true);cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
         }
         surfaceView.onPause()
         six?.pause()
@@ -1897,6 +1897,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             sliderDrag = null
             saveRoom()
         }
+        if(cancel) {
+            (pressedHit as? Hit.Content)?.let {it.window.content.touch(MotionEvent.ACTION_CANCEL,it.u,it.v)}
+            panelPressAt=0L;panelPress=null;panelPressMoved=false;pressedHit=null
+            return
+        }
         val panelStart = pressedHit as? Hit.Panel
         val panelEnd = hit as? Hit.Panel
         val swipe = if (panelPressMoved && panelStart != null && panelEnd != null) panelEnd.u - panelStart.u else 0f
@@ -1967,7 +1972,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if (BuildConfig.BE && event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> press(hit, ray)
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> release()
+                MotionEvent.ACTION_UP -> release()
+                MotionEvent.ACTION_CANCEL -> release(cancel=true)
             }
             return true
         }
