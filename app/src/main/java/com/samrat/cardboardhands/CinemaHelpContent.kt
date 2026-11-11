@@ -20,24 +20,24 @@ internal class CinemaHelpContent : VrWindow.Content {
             val c=Canvas(b);c.drawColor(Color.rgb(14,20,30))
             val p=Paint(Paint.ANTI_ALIAS_FLAG).apply {color=Color.WHITE;textSize=40f}
             val lines=listOf("NEXTVR CINEMA • HELP",
-                "Gaze: look at a button until the blue ring fills.",
-                "Ordinary text and the locked movie do not select.",
-                "Scroll: dwell on native Scroll up/down; keep looking to repeat.",
-                "Cinema: choose Cinema / browser. Controls stay below screen.",
-                "Hide controls leaves a small Show controls bar.",
-                "Website controls explicitly unlock the player surface.",
-                "DRM / iframe players may need the website's own controls.",
-                "Recenter: face your comfortable direction, then select Recenter.",
-                "Move: dwell on the handle, move head, hold still to drop.",
-                "Resize: dwell on corner handle, or choose Screen size.",
-                "Hands: experimental, off by default. Camera required.",
-                "Pinch a button; hold a handle to move/resize; release to drop.",
-                "Hand lost: grab cancels and gaze returns.",
-                "Real world: camera behind the movie. Environment: virtual.",
-                "Camera stays on while Hands or Real world is enabled.",
-                "Gallery is optional. Phone menu: Open a single video.",
-                "Dwell time / Sensitivity change gaze preferences.",
-                "Close Help using its window's close button.")
+                "Gaze: hold your view on a control until its ring fills.",
+                "Head tremors are tolerated; empty space cannot click.",
+                "Scroll: gaze at the native up/down buttons to repeat.",
+                "Cinema: controls remain BELOW the screen during playback.",
+                "Website controls: explicitly unlock the web player's surface.",
+                "Recenter: face the comfortable direction and select Recenter.",
+                "Grab: pinch a window's move handle, drag, then release.",
+                "Resize: pinch the corner handle, or use Screen size.",
+                "Hands: experimental and optional; camera permission required.",
+                "Browser pinch: move hand UP to scroll DOWN; release to stop.",
+                "Short pinch on a link selects it; moving prevents the click.",
+                "Two-hand pinch: spread both hands to enlarge the screen.",
+                "Hand detection lost: grabs and pending clicks cancel.",
+                "Align screen: select, look at the cinema wall, hold still.",
+                "Room -5° / +5° adjusts the panorama independently.",
+                "Camera Rotate +90° fixes orientation; hands rotate too.",
+                "Real world: camera behind the movie. Environments: virtual.",
+                "Gallery is optional. Close Help with its window close button.")
             lines.forEachIndexed { i,line ->p.textSize=if(i==0) 48f else 32f;c.drawText(line,45f,65f+i*51f,p)}
         }
         onReady()
