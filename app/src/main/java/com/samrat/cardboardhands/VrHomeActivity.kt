@@ -2478,20 +2478,38 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 for(k in 0 until 63) dest[k]+=(src[k]-dest[k])*alpha
             }
         }
+        // Two eyes render the same hand skeleton each frame. Keep the direct buffer
+        // across renders: allocating one for every eye caused repeated native-memory churn.
+        private var cinemaLineBuffer: java.nio.FloatBuffer? = null
         private fun drawCinemaHandLines(position:Int) {
             if(cinemaVisualHands.isEmpty()) return
-            val vertices=FloatArray(cinemaVisualHands.size*cinemaBones.size*3)
-            var o=0
-            for(hand in cinemaVisualHands) for(point in cinemaBones) {
-                val (x,y)=CinemaCameraUv.handToView(hand[point*3],hand[point*3+1],cinemaCameraCorrection)
-                vertices[o++]=(x-.5f)*2f*viewScaleX
-                vertices[o++]=(.5f-y)*2f*viewScaleY
-                vertices[o++]=-1f
+            val floatsNeeded=cinemaVisualHands.size*cinemaBones.size*3
+            var buffer=cinemaLineBuffer
+            if(buffer==null || buffer.capacity()<floatsNeeded) {
+                buffer=ByteBuffer.allocateDirect(floatsNeeded*4)
+                    .order(ByteOrder.nativeOrder()).asFloatBuffer()
+                cinemaLineBuffer=buffer
             }
+            buffer.clear()
+            val rotation=cinemaCameraCorrection.mod(360)
+            for(hand in cinemaVisualHands) for(point in cinemaBones) {
+                val u=hand[point*3]
+                val v=hand[point*3+1]
+                // Inverse manual orientation, matching CinemaCameraUv.handToView.
+                // Avoid creating a Pair for each landmark and each eye.
+                val x=when(rotation) {90->1f-v;180->1f-u;270->v;else->u}
+                val y=when(rotation) {90->u;180->1f-v;270->1f-u;else->v}
+                buffer.put((x-.5f)*2f*viewScaleX)
+                buffer.put((.5f-y)*2f*viewScaleY)
+                buffer.put(-1f)
+            }
+            buffer.flip()
             GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProgram,"uColor"),
                 .70f,.88f,1f,.85f)
             GLES20.glLineWidth(2f)
-            drawArray(vertices,GLES20.GL_LINES,position)
+            GLES20.glVertexAttribPointer(position,3,GLES20.GL_FLOAT,false,12,buffer)
+            GLES20.glEnableVertexAttribArray(position)
+            GLES20.glDrawArrays(GLES20.GL_LINES,0,floatsNeeded/3)
             GLES20.glLineWidth(1f)
         }
         private var cinemaRenderFrames=0
