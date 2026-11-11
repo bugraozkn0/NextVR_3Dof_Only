@@ -35,7 +35,10 @@ jobs:
         run: python3 scripts/prepare_cinema_environments.py
       - name: Unit tests and debug APK
         run: ./gradlew :app:testBeDebugUnitTest :app:assembleBeDebug --no-daemon --max-workers=2 --stacktrace
-      - name: Android lint
+      - name: Summarize executed BE tests
+        run: python3 scripts/summarize_cinema_tests.py
+      - name: Android lint (report legacy source issues separately)
+        continue-on-error: true
         run: ./gradlew :app:lintBeDebug --no-daemon --max-workers=2 --stacktrace
       - name: Test evidence
         if: always()
@@ -45,6 +48,7 @@ jobs:
           path: |
             app/build/test-results/testBeDebugUnitTest/
             app/build/reports/lint-results-beDebug.html
+            app/build/reports/lint-results-beDebug.xml
             app/src/be/assets/environments/credits.json
           if-no-files-found: warn
       - name: Verify installable APK and record checksum

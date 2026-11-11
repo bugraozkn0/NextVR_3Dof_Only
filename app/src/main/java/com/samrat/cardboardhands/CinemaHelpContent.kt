@@ -15,6 +15,7 @@ internal class CinemaHelpContent : VrWindow.Content {
     private var image:Bitmap?=null
     private var fresh=true
     override fun attach(context:Context,texture:SurfaceTexture?,onReady:()->Unit) {
+        image?.recycle();fresh=true
         image=Bitmap.createBitmap(pixelWidth,pixelHeight,Bitmap.Config.ARGB_8888).also { b ->
             val c=Canvas(b);c.drawColor(Color.rgb(14,20,30))
             val p=Paint(Paint.ANTI_ALIAS_FLAG).apply {color=Color.WHITE;textSize=40f}

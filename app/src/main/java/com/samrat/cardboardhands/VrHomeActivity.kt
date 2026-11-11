@@ -1,5 +1,6 @@
 package com.samrat.cardboardhands
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -112,8 +113,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private var cinemaLastAnalysis = 0L
     @Volatile private var cinemaAnalysisMs = 0f
     @Volatile private var cinemaCameraActive = false
+    @Volatile private var cinemaBindGeneration = 0
     @Volatile private var cinemaHint = "Dwell to select • Tap still works"
+    private var cinemaPermissionPending=false
     private var cinemaDistance = 1f
+    private var cinemaEnvironmentHeading=0f
     private var environmentGeneration = 0
     private val cinemaPrefs by lazy { getSharedPreferences("cinema_controls", MODE_PRIVATE) }
 
@@ -162,6 +166,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 val direction=tangentRay(tx,ty,handFrame.timeNs)
                 ray=direction; updateHit(hitTest(direction))
                 pinchPoint=floatArrayOf(hand.x,hand.y); beam=null
+                (hit as? Hit.Content)?.let {target -> (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)}
                 val event=cinemaPinch.update(true,hand.pinching,now)
                 if(event==CinemaPinchGate.Event.DOWN && cinemaKey(hit)!=null) press(hit,ray)
                 if(pressing) dragOrMove(direction)
@@ -198,6 +203,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             val content=window.content
             cinemaSession(window).media(if(content is BrowserContent) content.cinemaPlayback else if(content is VideoContent) content.cinemaState else "unknown")
         }
+        if(target is Hit.Resize) cinemaHint="Resize • Pinch/hold or dwell, then move"
+        if(target is Hit.Bar) cinemaHint="Move • Pinch/hold or dwell, then move"
         val key=cinemaKey(target)
         if(target is Hit.Cinema) cinemaHint=if(target.action in cinemaDisabled(target.window))
             "Player unavailable • Use Website controls" else CinemaControls.label(target.action)
@@ -231,6 +238,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             "size" -> {window.widthScale=if(window.widthScale>=2.8f) 1.4f else window.widthScale+.35f;window.heightScale=window.widthScale}
             "distance" -> {cinemaDistance=if(cinemaDistance>=1.4f) .8f else cinemaDistance+.2f;cinemaHint="Virtual distance: %.1f m".format(windowRadius)}
             "curve" -> window.arcDegrees=when(window.arcDegrees.toInt()){0->35f;35->55f;else->0f}
+            "envYaw" -> {cinemaEnvironmentHeading=(cinemaEnvironmentHeading+15f)%360f;cinemaHint="Room heading: "+cinemaEnvironmentHeading.toInt()+"°"}
             "recenter" -> recenter()
             "passthrough" -> runOnUiThread {setEnvironment(if(environmentId==Environments.REAL_WORLD) lastWorld else Environments.REAL_WORLD)}
             "environment" -> runOnUiThread {
@@ -263,9 +271,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun updateCinemaCamera() {
         val permission=ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED
         val wants=environmentId==Environments.REAL_WORLD||cinemaHandsEnabled
-        if(wants && !permission) {requestPermissions(arrayOf(Manifest.permission.CAMERA),cameraPreviewPermissionRequest);return}
+        if(wants && !permission) {if(!cinemaPermissionPending) {cinemaPermissionPending=true;requestPermissions(arrayOf(Manifest.permission.CAMERA),cameraPreviewPermissionRequest)};return}
         if(CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),permission,environmentId==Environments.REAL_WORLD,cinemaHandsEnabled)) bindCamera()
-        else {cameraProvider?.unbindAll();cinemaCameraActive=false;cinemaHandFrame=null}
+        else {cinemaBindGeneration++;cameraProvider?.unbindAll();cinemaCameraActive=false;cinemaHandFrame=null}
     }
 
     private val remote = RemoteControl(object : RemoteControl.Host {
@@ -437,7 +445,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        tracker = HeadTracker(getSystemService(SensorManager::class.java)) { display }.also {it.fullRecenter=BuildConfig.BE}
+        tracker = HeadTracker(getSystemService(SensorManager::class.java)) { if(Build.VERSION.SDK_INT>=30) display else windowManager.defaultDisplay }.also {it.fullRecenter=BuildConfig.BE}
         surfaceView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(2)
             preserveEGLContextOnPause=true
@@ -469,7 +477,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     var width=1920;var height=1080
                     val meta=android.media.MediaMetadataRetriever()
                     try {meta.setDataSource(this,uri);width=meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()?:1920;height=meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()?:1080} catch(_:Exception) {} finally {meta.release()}
-                    runOnUiThread {if(!isFinishing) openWindow("cinema-selected-video","Selected video",ID_PHOTOS) {VideoContent(this,uri,"Selected video",width,height)}}
+                    runOnUiThread {if(!isFinishing) openWindow("cinema-selected-video","Selected video",ID_PHOTOS) {VideoContent(this,uri,"Selected video",width,height) {message->toast(message)}}}
                 }
             }
         }
@@ -542,7 +550,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if(BuildConfig.BE) {
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
-            cinemaPinch.update(false,false,SystemClock.uptimeMillis()); release();cinemaMovingWindow=false;cinemaCameraActive=false
+            cinemaPinch.update(false,false,SystemClock.uptimeMillis()); release();cinemaMovingWindow=false;cinemaCameraActive=false;cinemaBindGeneration++
         }
         surfaceView.onPause()
         six?.pause()
@@ -839,7 +847,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
 
     private fun loadApps() {
         thread(name = "PhoneXR home apps") {
-            val found = runCatching { GameLibrary.scan(this) }.getOrDefault(emptyList())
+            val found = if(BuildConfig.BE) emptyList() else runCatching { GameLibrary.scan(this) }.getOrDefault(emptyList())
                 // Games still to be patched are left out: patching happens in the PhoneXR app, not in VR.
                 .filterNot {
                     it.kind == GameLibrary.Kind.VRAPI_UNSUPPORTED ||
@@ -866,7 +874,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 HomePanel.Entry("app:${it.packageName}", it.label,
                     MaterialYouIcons.themed(this, it.packageName, dark) ?: runCatching { packageManager.getApplicationIcon(it.packageName) }.getOrNull())
             }
-            val web = WebApps.installed(this).map { app ->
+            val web = if(BuildConfig.BE) emptyList() else WebApps.installed(this).map { app ->
                 HomePanel.Entry("web:${app.url}", app.name, WebApps.icon(app)?.let { BitmapDrawable(resources, it) } ?: letterIcon(app.name))
             }
             val allEntries = own + vr + web + if(BuildConfig.BE) listOf(HomePanel.Entry("cinema-help","Cinema Help",null)) else emptyList()
@@ -1145,10 +1153,12 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         redraw.set(true)
     }
 
+    @SuppressLint("MissingPermission") // The callback checks CAMERA immediately before binding.
     private fun bindCinemaCamera() {
+        val generation=++cinemaBindGeneration
         val future=ProcessCameraProvider.getInstance(this)
         future.addListener({
-            if(!CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+            if(generation!=cinemaBindGeneration || !CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
                 ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED,
                 environmentId==Environments.REAL_WORLD,cinemaHandsEnabled)||isFinishing) return@addListener
             val provider=runCatching {future.get()}.getOrElse {toast("Camera unavailable");return@addListener}
@@ -1158,7 +1168,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             val preview=androidx.camera.core.Preview.Builder().setTargetResolution(android.util.Size(1280,720)).setTargetRotation(rotation).build()
             preview.setSurfaceProvider { request ->
                 glTasks += {
-                    if(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) renderer?.setCinemaPreview(request)
+                    if(generation==cinemaBindGeneration && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) renderer?.setCinemaPreview(request)
                     else request.willNotProvideSurface()
                 }
             }
@@ -1191,7 +1201,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 .onSuccess {camera ->
                     cinemaCameraActive=true
                     camera.cameraInfo.cameraState.observe(this) {state ->
-                        if(state.error!=null) {cinemaCameraActive=false;cinemaHandFrame=null;toast("Camera interrupted • Gaze remains available")}
+                        if(generation==cinemaBindGeneration && state.error!=null) {cinemaCameraActive=false;cinemaHandFrame=null;toast("Camera interrupted • Gaze remains available")}
                     }
                 }.onFailure {cinemaCameraActive=false;toast("Camera busy or unsupported • Use virtual environment")}
         },ContextCompat.getMainExecutor(this))
@@ -1199,6 +1209,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
 
     // ------------------------------------------------------------------ Camera and hands
 
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun bindCamera() {
         if(BuildConfig.BE) {bindCinemaCamera();return}
         val future = ProcessCameraProvider.getInstance(this)
@@ -1382,6 +1393,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         // Windows are in front of the icons; the focused one first.
         val ordered = windows.filter { !it.minimized }.sortedByDescending { it == focused }
         for (window in ordered) {
+            if(BuildConfig.BE) {
+                val grip=toLocal(direction,window.yaw,windowRadius)
+                if(grip!=null && grip[0] in (window.width/2-.10f)..(window.width/2+.10f) &&
+                    grip[1]-window.height in (-window.heightM/2-.10f)..(-window.heightM/2+.10f)) return Hit.Resize(window)
+            }
             if (window.arcDegrees > 0f) curvedContentHit(direction, window)?.let { return it }
             val local = toLocal(direction, window.yaw, windowRadius) ?: continue
             val x = local[0]
@@ -1836,6 +1852,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (BuildConfig.BE && requestCode == cameraPreviewPermissionRequest) {
+            cinemaPermissionPending=false
             if(grantResults.isNotEmpty() && grantResults[0]==PackageManager.PERMISSION_GRANTED) updateCinemaCamera()
             else {cinemaHandsEnabled=false;cinemaPrefs.edit().putBoolean("hands",false).apply();setEnvironment(lastWorld);toast("Camera denied • Browser and movies still work")}
         }
@@ -2276,7 +2293,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             frameTextures.clear()
             environmentTexture=0;hasEnvironment=false
             eyes = Eyes.load(this@VrHomeActivity)
-            if(BuildConfig.BE) runOnUiThread {updateCinemaCamera(); setEnvironment(environmentId)}
+            if(BuildConfig.BE) runOnUiThread {setEnvironment(environmentId)}
             // The home stays where it was put; only car mode brings the view along.
             panelFollows = false
             textureProgram = CinemaRenderer.program(TEXTURE_VERTEX, TEXTURE_FRAGMENT)
@@ -2640,6 +2657,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 // The place around the user, behind everything else.
                 Matrix.multiplyMM(mvp, 0, projection, 0, view, 0)
                 if (hasEnvironment) environmentMesh?.let { mesh ->
+                    if(BuildConfig.BE) Matrix.rotateM(mvp,0,cinemaEnvironmentHeading,0f,1f,0f)
                     GLES20.glUseProgram(textureProgram)
                     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
                     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, environmentTexture)
@@ -2714,6 +2732,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     }
                     val name = if (window.content is BrowserContent) window.title else title ?: window.title
                     pill(window, name, mvp, h, z, typing == window, lit, held)
+                    if(BuildConfig.BE) resizeHandle(mvp,w,h,z,(hit as? Hit.Resize)?.window==window || drag?.let {it.window==window && it.resize}==true)
                     if(BuildConfig.BE && (window.content is BrowserContent || window.content is VideoContent)) {
                         val actions=cinemaActions(window)
                         val action=(hit as? Hit.Cinema)?.takeIf {it.window==window}?.action

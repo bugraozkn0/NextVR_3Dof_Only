@@ -63,3 +63,12 @@ Do not uninstall an existing build until a replacement is available and app-data
 - https://developer.android.com/training/data-storage/shared/documents-files
 - https://polyhaven.com/license
 - CINEMA_ASSET_CREDITS.md
+
+## Static analysis scope
+The first V2 CI run executed all 75 BE tests successfully and assembled the APK.
+Lint then reported 13 errors in shared legacy code (permissions, old-API guards,
+service declarations, Compose locale/remember usage and CameraX opt-in annotations).
+V2 fixes the API-29 guard and opt-in issues in VrHomeActivity; unrelated activities/services
+are preserved. Lint remains a non-blocking reporting step, with its real exit result and HTML/XML
+report retained. A green APK workflow therefore does not imply a clean lint report.
+The final run is the authoritative source for the remaining error count.

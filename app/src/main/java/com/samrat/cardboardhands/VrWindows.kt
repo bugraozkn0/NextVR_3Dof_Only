@@ -251,7 +251,24 @@ class BrowserContent(
     fun cinemaAction(action: String) {
         main.post {
             if (action == "fullscreen" && cinemaFullscreen != null) cinemaHideFullscreen(notifyPage=true)
-            else webView?.evaluateJavascript(CinemaBrowserScript.action(action),null)
+            else if(action=="fullscreen") {
+                val owner=webView?:return@post
+                val epoch=cinemaEpoch
+                // A WebView touch preserves user activation; evaluateJavascript(requestFullscreen)
+                // alone is rejected by many players. Only an explicitly labelled button is targeted.
+                owner.evaluateJavascript(CinemaBrowserScript.SETUP+"\nJSON.stringify(window.__nxCinema.fullscreenControl())") {value ->
+                    if(epoch!=cinemaEpoch || owner!==webView) return@evaluateJavascript
+                    val point=runCatching {org.json.JSONObject(org.json.JSONTokener(value).nextValue() as String)}.getOrNull()
+                    val u=point?.optDouble("u")?.toFloat()?:-1f
+                    val v=point?.optDouble("v")?.toFloat()?:-1f
+                    if(u in 0f..1f && v in 0f..1f) {
+                        for(a in intArrayOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                            val event=touches.event(a,u,v)
+                            presentation?.window?.decorView?.dispatchTouchEvent(event);event.recycle()
+                        }
+                    } else owner.evaluateJavascript(CinemaBrowserScript.action(action),null)
+                }
+            } else webView?.evaluateJavascript(CinemaBrowserScript.action(action),null)
         }
     }
     /** The page on screen: the chosen tab's WebView. */

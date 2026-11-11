@@ -8,12 +8,12 @@ import android.graphics.RectF
 
 /** One native VR layer; no page CSS, video state or timer can remove scrolling. */
 internal object CinemaControls {
-    const val HEIGHT_M = .42f
+    const val HEIGHT_M = .50f
     const val GAP_M = .13f
     val browser = listOf("back", "forward", "reload", "address", "home", "cinema",
         "scrollUp", "scrollDown", "play", "seekBack", "seekForward", "fullscreen",
         "size", "distance", "curve", "recenter", "environment", "passthrough",
-        "website", "hands", "dwell", "sensitivity", "help", "hide")
+        "website", "hands", "dwell", "sensitivity", "help", "hide", "envYaw")
     val video = browser.filter { it !in listOf("back", "forward", "reload", "address", "home", "scrollUp", "scrollDown", "fullscreen") }
     fun actions(isBrowser: Boolean, shown: Boolean): List<String> =
         if (!shown) (if (isBrowser) listOf("show", "scrollUp", "scrollDown", "help") else listOf("show", "help"))
@@ -30,7 +30,7 @@ internal object CinemaControls {
         "scrollUp" -> "Scroll up"; "scrollDown" -> "Scroll down"; "play" -> "Play / pause"
         "seekBack" -> "−10 seconds"; "seekForward" -> "+10 seconds"; "cinema" -> "Cinema / browser"
         "size" -> "Screen size"; "distance" -> "Distance"; "curve" -> "Curvature"
-        "recenter" -> "Recenter"; "environment" -> "Environment"; "passthrough" -> "Real world"
+        "envYaw" -> "Room heading"; "recenter" -> "Recenter"; "environment" -> "Environment"; "passthrough" -> "Real world"
         "website" -> "Website controls"; "hands" -> "Hands (experimental)"; "dwell" -> "Dwell time"
         "sensitivity" -> "Sensitivity"; "help" -> "Help"; "hide" -> "Hide controls"; "show" -> "Show controls"
         "address" -> "Address / search"; "fullscreen" -> "Fullscreen"; else -> action.replaceFirstChar { it.uppercase() }

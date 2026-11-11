@@ -50,7 +50,13 @@ internal object CinemaBrowserScript {
     } else return false;
     return true;
   };
-  window.__nxCinema={state,hit,action};
+  const fullscreenControl = () => {
+    const candidates=Array.from(document.querySelectorAll('button,[role=button]'));
+    const el=candidates.find(b => /full.?screen|tam ekran|plein .cran/i.test(b.getAttribute('aria-label')||b.title||'') && b.getBoundingClientRect().width>5 && !b.disabled);
+    if(!el) return null;
+    const r=el.getBoundingClientRect();return {u:(r.left+r.width/2)/innerWidth,v:(r.top+r.height/2)/innerHeight};
+  };
+  window.__nxCinema={state,hit,action,fullscreenControl};
 })();
 """.trimIndent()
     fun query(u: Float, v: Float) = SETUP + "\nJSON.stringify({input:!!document.activeElement && document.activeElement.matches(\'input,textarea,[contenteditable=true]\'),media:window.__nxCinema.state(),hit:window.__nxCinema.hit($u,$v)})"
