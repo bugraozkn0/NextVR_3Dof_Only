@@ -817,6 +817,13 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         val old = six
         six = null
         if (old != null) { old.pause(); old.close() }
+        if(BuildConfig.BE) {
+            // Camera streams change coordinate/time history. Cancel held gestures, never release-click.
+            cinemaHandFrame=null;handPoints=emptyList();cinemaDwell.reset();cinemaInput.clear()
+            cinemaPinch.update(false,false,SystemClock.uptimeMillis())
+            cinemaHandMotion.cancel();cinemaHandScrollTarget=null;cinemaTwoHand.cancel();cinemaTwoHandUsed=false
+            release(cancel=true);cinemaHandDriving=false
+        }
         synchronized(headPosition) {
             if(BuildConfig.BE) System.arraycopy(headPosition,0,cinemaPositionBase,0,3)
             else headPosition.fill(0f)
@@ -827,7 +834,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 neckModel = !BuildConfig.BE && six == null && !Settings.travelMode(this)
                 if(BuildConfig.BE) updateCinemaCamera()
                 else if(six?.ownsCamera!=true && ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) bindCamera()
-                if(announce) toast(six?.statusText() ?: if(mode==Settings.SixDofMode.EASYAR)
+                if(announce || mode==Settings.SixDofMode.EASYAR && six==null &&
+                    ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
+                    toast(six?.statusText() ?: if(mode==Settings.SixDofMode.EASYAR)
                     EasyArTracker.failureReason() ?: SixDofSupport.unavailableReason(this,mode) ?: "EasyAR waiting for camera permission"
                     else tr("3DoF: head rotation only"))
                 redraw.set(true)
