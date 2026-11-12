@@ -223,7 +223,7 @@ class EasyArTracker private constructor(private val headAt: ((Long, FloatArray) 
                                 fps, pose.position[0], pose.position[1], pose.position[2], input.timestamp(),
                                 if (clockMatches) "sensor clock" else "arrival clock", pose.rebases,rawDof,validation,quality,accepted)
                         }
-                        val handDue=(wantImage || previewFailed && previewWanted) && now-lastImage>=33_000_000L
+                        val handDue=wantImage && now-lastImage>=33_000_000L
                         if(!previewWanted && !handDue) return null
                         val image = input.image()
                         try {

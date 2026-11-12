@@ -2891,7 +2891,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         private fun updateSixDof(tracker6: SixDof) {
             tracker.copyHead(head)
             if(BuildConfig.BE) tracker6.imageDemand(environmentId==Environments.REAL_WORLD,cinemaScanning)
-            val job = tracker6.update(head, wantImage = !busy.get() && (!BuildConfig.BE || cinemaHandsEnabled))
+            val job = tracker6.update(head, wantImage = !busy.get() && (!BuildConfig.BE || cinemaHandsEnabled || tracker6.cameraCpuFallback && environmentId==Environments.REAL_WORLD))
             // The table, once a second: where it stands is remembered for the keyboard. Only a
             // backend that sees geometry has any; VINS-Mono tracks features, not walls.
             if (tracker6.supportsRoomScan && ++scanFrames % 60 == 0) RoomScan.remember(this@VrHomeActivity, tracker6.surfaces)
