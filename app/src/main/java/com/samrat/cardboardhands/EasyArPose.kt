@@ -27,6 +27,12 @@ internal class EasyArPose {
 
     fun lost() { lost = true }
     fun newStream() { lost = true; lastTime = Long.MIN_VALUE }
+    fun point(raw:FloatArray):FloatArray? {
+        if(!aligned || raw.size<3 || raw.any {!it.isFinite()}) return null
+        return FloatArray(3) {r -> offset[r]+(0..2).sumOf {c ->
+            (rotation[c*3+r]*(raw[c]-origin[c])).toDouble()
+        }.toFloat()}
+    }
 
     fun update(camera: FloatArray, sensor: FloatArray, timeNs: Long): Boolean {
         if (camera.size != 16 || sensor.size != 16 || camera.any { !it.isFinite() } ||

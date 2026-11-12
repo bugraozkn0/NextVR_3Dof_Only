@@ -104,7 +104,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private val cinemaSessions = ConcurrentHashMap<String,CinemaSession>()
     private fun cinemaSession(window:VrWindow) = cinemaSessions.getOrPut(window.id) {CinemaSession()}
     private val cinemaInput = CinemaInputArbiter()
-    private val cinemaPinch = CinemaPinchGate()
+    private val cinemaPinch = CinemaPinchGate(35L,requireOpen=true)
     private val cinemaHandMotion = CinemaHandMotion()
     private val cinemaTwoHand = CinemaTwoHandScale()
     private var cinemaHandScrollTarget: Hit.Content? = null
@@ -118,6 +118,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     @Volatile private var cinemaHandsEnabled = false
     @Volatile private var cinemaHandFrame: PinchHands.Frame? = null
     private var cinemaHandDriving = false
+    @Volatile private var cinemaHeadPinch=true
+    @Volatile private var cinemaRoomLocked=true
+    @Volatile private var cinemaScanning=false
+    @Volatile private var cinemaAdvanced=false
+    private var cinemaHud: CinemaStatusHud?=null
     private var cinemaMovingWindow = false
     private var cinemaDropAt = 0L
     private var cinemaDropRay: FloatArray? = null
@@ -136,8 +141,79 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     @Volatile private var cinemaDiagnostics=false
     @Volatile private var environmentGeneration = 0
     private val cinemaPrefs by lazy { getSharedPreferences("cinema_controls", MODE_PRIVATE) }
+    private val cinemaHudUpdate=object:Runnable {
+        override fun run(){
+            if(!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+            val source=six
+            val status=source?.trackingSummary() ?: if(sixMode==Settings.SixDofMode.EASYAR)
+                EasyArTracker.failureReason() ?: "EasyAR başlamadı · kamera iznini / lisansı kontrol et"
+                else "3DoF · konum takibi kapalı"
+            val handStatus=if(!cinemaHandsEnabled) "El kapalı / dwell" else if(cinemaHandFrame?.hands?.isNotEmpty()==true) (if(cinemaPinch.ready) "El hazır" else "Önce elini aç") else "El aranıyor"
+            val guide=if(cinemaScanning) "Tara: 20–30 cm ötele, zemine bak · ölçülen: %.0f cm · sabitlemek için dokun".format((source?.positionTravelMeters?:0f)*100)
+                else if(cinemaRoomLocked) "ODADA KİLİTLİ · "+(if(cinemaHeadPinch) "Başla hedefle + pinch" else "El ile hedefle + pinch")+" · "+handStatus
+                else "YERLEŞTİRME · Tutamacı pinch ile taşı, sonra kilitle"
+            cinemaHud?.render(status,guide,source?.tracking==true)
+            handler.postDelayed(this,500)
+        }
+    }
+    private fun cycleCinemaInput()=runOnUiThread {
+        cinemaHeadPinch=!cinemaHeadPinch
+        cinemaPrefs.edit().putBoolean("head_pinch",cinemaHeadPinch).apply()
+        cinemaHandsEnabled=true;cinemaPrefs.edit().putBoolean("hands",true).apply();startCinemaHands()
+        glTasks += {release(cancel=true);pinchX.reset();pinchY.reset();cinemaPinch.update(false,false,SystemClock.uptimeMillis());cinemaDwell.reset()}
+        updateCinemaCamera()
+        toast(if(cinemaHeadPinch) "Başınla hedefle · elini aç, pinch ile seç · basılı tutup kaydır"
+            else "Elinle hedefle · pinch ile seç · iki elle büyütme kullanılabilir")
+    }
+    private fun beginCinemaScan() {
+        cinemaScanning=true;cinemaRoomLocked=true;carMode=false;tracker.travelMode=false
+        Settings.setTravelMode(this,false)
+        setEnvironment(Environments.REAL_WORLD)
+        if(sixMode!=Settings.SixDofMode.EASYAR || six==null || EasyArTracker.failureReason()!=null) applySixDofMode(Settings.SixDofMode.EASYAR)
+        toast("Odayı tara: yavaşça ötele ve zemine bak. Gerçek yüzey bulununca küçük bir işaret görünür.")
+    }
+    private fun toggleCinemaLock()=runOnUiThread {
+        if(cinemaScanning){
+            if(six?.tracking!=true || (six?.positionTravelMeters?:0f)<.03f){toast("Gerçek konumu doğrulamak için telefonu en az birkaç cm ötele. Durum satırından ayrıntıları aç.");return@runOnUiThread}
+            cinemaScanning=false;cinemaRoomLocked=true
+            toast("Oda kilitlendi. Ekranın etrafında hareket ederek kontrol et.")
+        }else{
+            cinemaRoomLocked=!cinemaRoomLocked
+            toast(if(cinemaRoomLocked) "Ekran odada kilitli" else "Yerleştirme açık: tutamacı pinch ile taşı")
+        }
+        glTasks += {release(cancel=true);cinemaMovingWindow=false;cinemaDwell.reset()}
+    }
+    private fun rescueCinemaWindows() {
+        glTasks += {
+            release(cancel=true);cinemaMovingWindow=false;cinemaAlignWindow=null
+            recenter();panelYaw=0f;panelVisible=true;panelFollows=false
+            windows.filter {!it.minimized}.forEachIndexed {i,w->w.yaw=if(i==0) 0f else (if(i%2==0) 28f else -28f);w.height=0f}
+            cinemaRoomLocked=true;redraw.set(true)
+        }
+    }
+    private fun cinemaHudAction(action:String) {
+        when(action){
+            "scan"->beginCinemaScan()
+            "lock"->toggleCinemaLock()
+            "rescue"->rescueCinemaWindows()
+            "input"->cycleCinemaInput()
+            "retry"->{cinemaScanning=true;cinemaRoomLocked=true;carMode=false;tracker.travelMode=false;Settings.setTravelMode(this,false)
+                setEnvironment(Environments.REAL_WORLD);applySixDofMode(Settings.SixDofMode.EASYAR)}
+            "three"->{cinemaScanning=false;setEnvironment(Environments.REAL_WORLD);applySixDofMode(Settings.SixDofMode.NONE)}
+            "details"->{
+                val text="${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}\n"+
+                    (six?.statusText() ?: EasyArTracker.failureReason() ?: "Takipçi yok")+
+                    "\nEl: %.1f FPS / %.0f ms · çizim: %.0f FPS".format(cinemaAnalysisFps,cinemaAnalysisMs,renderer?.cinemaRenderFps?:0f)+
+                    "\nYüzey işareti: "+(if(six?.placementPoint!=null) "SDK yatay yüzey hit-test bulundu" else "henüz bulunmadı")
+                android.app.AlertDialog.Builder(this).setTitle("Gerçek takip durumu").setMessage(text)
+                    .setPositiveButton("Kapat",null).setNeutralButton("Kopyala"){_,_->
+                        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Cinema diagnostics",text))
+                    }.show()
+            }
+        }
+    }
 
-    private fun cinemaActions(window: VrWindow) = CinemaControls.actions(window.content is BrowserContent, cinemaSession(window).controls)
+    private fun cinemaActions(window: VrWindow) = CinemaControls.actions(window.content is BrowserContent, cinemaSession(window).controls,cinemaAdvanced)
     private fun cinemaDisabled(window: VrWindow): Set<String> =
         if (window.content is BrowserContent && !window.content.cinemaControllable) setOf("play","seekBack","seekForward","fullscreen") else emptySet()
     private fun cinemaKey(target: Hit?): String? = when(target) {
@@ -147,8 +223,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         }
         is Hit.Toolbar -> (if(target.u<0) "back" else WindowChrome.barAction(target.u,target.v,target.window.content.toolbarTabs().size))?.takeUnless { it=="move" }?.let { "toolbar:${target.window.id}:$it" }
         is Hit.Keyboard -> keyboard.hovered(target.u,target.v)?.let { "keyboard:${target.window.id}:$it" }
-        is Hit.Bar -> "move:${target.window.id}"
-        is Hit.Resize -> "resize:${target.window.id}"
+        is Hit.Bar -> if(cinemaRoomLocked) null else "move:${target.window.id}"
+        is Hit.Resize -> if(cinemaRoomLocked) null else "resize:${target.window.id}"
         is Hit.Close -> "close:${target.window.id}"
         is Hit.Minimize -> "minimize:${target.window.id}"
         is Hit.Expand -> "expand:${target.window.id}"
@@ -195,6 +271,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 window.yaw=yawOf(forward)
                 window.height=heightAt(forward,windowRadius).coerceIn(-.7f,.7f)
                 window.arcDegrees=0f
+                cinemaRoomLocked=true
                 cinemaAlignWindow=null;cinemaAlignStartRay=null;cinemaAlignStableRay=null
                 cinemaHint="Movie screen placed • Pinch its handle for fine adjustments"
             }
@@ -254,11 +331,15 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 activeLeft=hand.left
                 cinemaInput.hand(now)
                 val (handX,handY)=CinemaCameraUv.handToView(hand.x,hand.y,cinemaCameraCorrection)
-                val tx=pinchX.filter((handX-.5f)*2*viewScaleX,handFrame.timeNs)
-                val ty=pinchY.filter((.5f-handY)*2*viewScaleY,handFrame.timeNs)
-                val direction=tangentRay(tx,ty,handFrame.timeNs)
+                val aim=CinemaCameraUv.handToView(hand.shape.aimX,hand.shape.aimY,cinemaCameraCorrection)
+                val tx=pinchX.filter((aim.first-.5f)*2*viewScaleX,handFrame.timeNs)
+                val ty=pinchY.filter((.5f-aim.second)*2*viewScaleY,handFrame.timeNs)
+                val direction=if(cinemaHeadPinch) FloatArray(16).also {tracker.copyHead(it)}.let {head ->
+                    FloatArray(4).also {Matrix.multiplyMV(it,0,head,0,floatArrayOf(0f,0f,-1f,0f),0)}
+                } else tangentRay(tx,ty,handFrame.timeNs)
                 ray=direction;updateHit(hitTest(direction))
-                pinchPoint=floatArrayOf(handX,handY);beam=null
+                pinchPoint=if(cinemaHeadPinch) null else floatArrayOf(handX,handY)
+                beam=if(cinemaHeadPinch) floatArrayOf(0f,0f,0f,0f,0f,-windowRadius,1f) else null
                 pinching=hand.pinching
                 (hit as? Hit.Content)?.let {target ->
                     (target.window.content as? BrowserContent)?.cinemaProbe(target.u,target.v)
@@ -308,6 +389,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     cinemaHandScrollTarget!=null ->
                         "Pinch held • Move vertically to scroll, release to select"
                     pressing -> "Pinch grab • Move hand • Release to drop"
+                    !cinemaPinch.ready -> "Open your hand first • Pinch to select"
+                    cinemaHeadPinch -> "Look with your head • Pinch to select • Hold and move to scroll"
                     else -> "Hand detected • Pinch controls / grab handle"
                 }
                 return
@@ -384,6 +467,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaHint="Room rotated to "+cinemaEnvironmentHeading.toInt()+"° • Use Align screen here"
             }
             "alignScreen" -> {
+                cinemaRoomLocked=false
                 val pose=FloatArray(16).also {tracker.copyHead(it)}
                 val forward=FloatArray(4)
                 Matrix.multiplyMV(forward,0,pose,0,floatArrayOf(0f,0f,-1f,0f),0)
@@ -404,6 +488,10 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 cinemaPrefs.edit().putBoolean("diagnostics",cinemaDiagnostics).apply()
                 cinemaHint=if(cinemaDiagnostics) "Diagnostics ON" else "Diagnostics OFF • Control hints are visible"
             }
+            "more" -> {cinemaAdvanced=!cinemaAdvanced;cinemaDwell.reset()}
+            "inputMode" -> cycleCinemaInput()
+            "roomLock" -> toggleCinemaLock()
+            "scanRoom" -> runOnUiThread {beginCinemaScan()}
             "recenter" -> recenter()
             "passthrough" -> runOnUiThread {setEnvironment(if(environmentId==Environments.REAL_WORLD) lastWorld else Environments.REAL_WORLD)}
             "environment" -> runOnUiThread {
@@ -429,7 +517,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
 
     private fun startCinemaHands() {
         trackingExecutor.execute {
-            if(pinchHands==null && cinemaHandsEnabled) runCatching {PinchHands(this,useGpu=false)}
+            if(pinchHands==null && cinemaHandsEnabled) runCatching {PinchHands(this,useGpu=true)}
+                .recoverCatching {PinchHands(this,useGpu=false)}
                 .onSuccess {pinchHands=it}.onFailure {runOnUiThread {cinemaHandsEnabled=false;toast("Hand tracking unavailable • Gaze remains active");updateCinemaCamera()}}
         }
     }
@@ -630,7 +719,13 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             isFocusable = true
             isFocusableInTouchMode = true
         }
-        setContentView(surfaceView)
+        if(BuildConfig.BE){
+            cinemaHud=CinemaStatusHud(this,::cinemaHudAction)
+            setContentView(android.widget.FrameLayout(this).apply {
+                addView(surfaceView,android.widget.FrameLayout.LayoutParams(-1,-1))
+                addView(cinemaHud,android.widget.FrameLayout.LayoutParams(-1,-2,android.view.Gravity.TOP))
+            })
+        }else setContentView(surfaceView)
         // Always the compact panel: the library opens from the panel or the left hand's menu button.
         panel.compact = true
         panel.dark = MaterialYouIcons.dark(this)
@@ -641,7 +736,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if (!BuildConfig.BE && !Settings.setupDone(this)) onboarding = Onboarding(this, onboardingHost)
         // BE has no camera to show the room: a black space around the windows.
         if (BuildConfig.BE) {
-            cinemaHandsEnabled=cinemaPrefs.getBoolean("hands",false)
+            cinemaHeadPinch=cinemaPrefs.getBoolean("head_pinch",true)
+            cinemaHandsEnabled=cinemaPrefs.getBoolean("hands",true)
             cinemaCameraCorrection=cinemaPrefs.getInt("camera_correction",0).mod(360)
             cinemaDiagnostics=cinemaPrefs.getBoolean("diagnostics",false)
             cinemaDwell.dwellMs=cinemaPrefs.getLong("dwell",950L).coerceIn(500,2000)
@@ -668,6 +764,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         // switch back to a solved pose was a jump. A tracker that exists owns the position, and the
         // head simply stays where tracking began until the first pose arrives.
         sixMode = Settings.sixDofMode(this)
+        if(BuildConfig.BE && sixMode==Settings.SixDofMode.EASYAR){
+            Settings.setTravelMode(this,false);cinemaScanning=true;setEnvironment(Environments.REAL_WORLD)
+        }
         six = startSixDof(sixMode)
         neckModel = !BuildConfig.BE && six == null && !Settings.travelMode(this)
         // Cinema edition never starts the remote-control server.
@@ -692,10 +791,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
             applySixDofMode(wanted, announce=false)
         surfaceView.onResume()
-        carMode = Settings.travelMode(this)
+        carMode = !BuildConfig.BE && Settings.travelMode(this)
         tracker.travelMode = carMode
         synchronized(panel) { panel.car = carMode }
         tracker.start()
+        if(BuildConfig.BE) {cinemaHud?.visibility=android.view.View.VISIBLE;handler.post(cinemaHudUpdate)}
         sensorSixDof?.let { it.reset(); it.start() }
         if (BuildConfig.BE) {
             cinemaSessions.values.forEach {it.foreground(true)}
@@ -728,6 +828,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         if(BuildConfig.BE) {
             sixSwitchGeneration++
+            handler.removeCallbacks(cinemaHudUpdate)
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
             cinemaPinch.update(false,false,SystemClock.uptimeMillis())
@@ -787,7 +888,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
      */
     private fun startSixDof(mode: Settings.SixDofMode): SixDof? {
         // Cinema opts into EasyAR only. Travel mode remains rotation-only for every backend.
-        if ((BuildConfig.BE && mode != Settings.SixDofMode.EASYAR) || mode == Settings.SixDofMode.NONE || Settings.travelMode(this)) return null
+        if ((BuildConfig.BE && mode != Settings.SixDofMode.EASYAR) || mode == Settings.SixDofMode.NONE || (!BuildConfig.BE && Settings.travelMode(this))) return null
         val tracker = runCatching { SixDofSupport.create(this, mode) { time,out -> this.tracker.copyHeadAt(time,out) } }.onFailure { Log.w(TAG, "$mode 6DoF failed to start", it) }.getOrNull()
             ?: return null
         // While the home is in the background the tracker stays asleep: onResume wakes it. Waking it
@@ -816,7 +917,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         cinemaBindGeneration++
         val old = six
         six = null
-        if (old != null) { old.pause(); old.close() }
+        if (old != null) { old.pause();old.close();glTasks += {old.releaseGl()} }
         if(BuildConfig.BE) {
             // Camera streams change coordinate/time history. Cancel held gestures, never release-click.
             cinemaHandFrame=null;handPoints=emptyList();cinemaDwell.reset();cinemaInput.clear()
@@ -1772,6 +1873,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private var panelPressMoved = false
 
     private fun press(target: Hit?, direction: FloatArray?) {
+        if(BuildConfig.BE && cinemaRoomLocked && (target is Hit.Bar || target is Hit.Resize)) return
         pressing = true
         pressedHit = target
         when (target) {
@@ -1812,7 +1914,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     "minimize" -> runOnUiThread { minimize(target.window) }
                     "close" -> runOnUiThread { close(target.window) }
                     // The empty parts of the bar move the window, like its handle.
-                    "move" -> if (direction != null) {
+                    "move" -> if (direction != null && (!BuildConfig.BE || !cinemaRoomLocked)) {
                         drag = Drag(target.window, target.window.yaw, target.window.height, yawOf(direction), heightAt(direction, windowRadius))
                     }
                     else -> target.window.content.toolbarAction(action)
@@ -2385,6 +2487,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
      */
     private fun followWithPanel() {
         val car = carMode
+        if(BuildConfig.BE && cinemaRoomLocked) return
         if (!panelFollows && !car) return
         val head = FloatArray(16)
         tracker.copyHead(head)
@@ -2413,7 +2516,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         synchronized(panel) { panel.car = on }
         // The tracker stops with the mode: in a car the room itself moves, and nothing here tells a
         // moving room from a moving headset. applySixDofMode starts nothing while the car mode is on.
-        applySixDofMode(sixMode, announce = false)
+        applySixDofMode(if(BuildConfig.BE && on) Settings.SixDofMode.NONE else sixMode, announce = false)
         if (on) {
             sensorSixDof?.stop()
             toast(tr("Car mode: 3DoF, windows follow your gaze"))
@@ -2560,7 +2663,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             GLES20.glLineWidth(1f)
         }
         private var cinemaRenderFrames=0
-        private var cinemaRenderFps=0f
+        var cinemaRenderFps=0f
         fun setCinemaPreview(request: androidx.camera.core.SurfaceRequest) {
             val previous=cinemaPreview
             @Suppress("DEPRECATION")
@@ -2706,7 +2809,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         private fun roomGrid(world: FloatArray) {
             val tracker6 = six ?: return
             val setup = onboarding?.step == Onboarding.Step.ROOM
-            if (!setup) return
+            if (!setup && !(BuildConfig.BE && cinemaScanning)) return
             val surfaces = tracker6.surfaces
             if (surfaces.isEmpty()) return
             GLES20.glUseProgram(colorProgram)
@@ -2787,8 +2890,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         /** 6DoF: one step of the tracker — head position, and a camera frame for the hands when free. */
         private fun updateSixDof(tracker6: SixDof) {
             tracker.copyHead(head)
-            val job = tracker6.update(head, wantImage = !busy.get() &&
-                (!BuildConfig.BE || cinemaHandsEnabled || environmentId==Environments.REAL_WORLD))
+            if(BuildConfig.BE) tracker6.imageDemand(environmentId==Environments.REAL_WORLD,cinemaScanning)
+            val job = tracker6.update(head, wantImage = !busy.get() && (!BuildConfig.BE || cinemaHandsEnabled))
             // The table, once a second: where it stands is remembered for the keyboard. Only a
             // backend that sees geometry has any; VINS-Mono tracks features, not walls.
             if (tracker6.supportsRoomScan && ++scanFrames % 60 == 0) RoomScan.remember(this@VrHomeActivity, tracker6.surfaces)
@@ -2803,35 +2906,35 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                                     return@execute
                                 }
                                 var upright=frame.bitmap
-                                if(cinemaCameraCorrection!=0) {
-                                    val corrected=Bitmap.createBitmap(upright,0,0,upright.width,upright.height,
-                                        android.graphics.Matrix().apply {postRotate(cinemaCameraCorrection.toFloat())},true)
-                                    if(corrected!==upright) upright.recycle()
-                                    upright=corrected
-                                }
                                 val start=SystemClock.uptimeMillis()
-                                val interval=maxOf(83L,(cinemaAnalysisMs*1.5f).toLong()).coerceAtMost(400L)
-                                if(cinemaHandsEnabled && pinchHands!=null && start-cinemaLastAnalysis>=interval) {
+                                if(cinemaHandsEnabled && pinchHands!=null) {
                                     cinemaLastAnalysis=start
                                     runCatching {pinchHands?.detect(upright,frame.timestampNs/1_000_000L,scaleX=viewScaleX,scaleY=viewScaleY)}
-                                        .onFailure {Log.w(TAG,"EasyAR hand image rejected; gaze remains active",it)}.getOrNull()?.let {
+                                        .onFailure {
+                                            Log.w(TAG,"EasyAR hand image rejected; gaze remains active",it)
+                                            if(pinchHands?.usingGpu==true){
+                                                runCatching {pinchHands?.close()};pinchHands=null
+                                                runCatching {PinchHands(this@VrHomeActivity,useGpu=false)}.onSuccess {pinchHands=it}
+                                            }
+                                        }.getOrNull()?.let {
                                         if(six===tracker6 && cinemaHandsEnabled && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                                             cinemaHandFrame=it;handPoints=it.points
                                         }
                                     }
                                     cinemaAnalysisMs=(SystemClock.uptimeMillis()-start).toFloat()
+                                    if(cinemaAnalysisEpoch==0L) cinemaAnalysisEpoch=start
                                     cinemaAnalysisFrames++
                                     if(start-cinemaAnalysisEpoch>=1000) {
                                         cinemaAnalysisFps=cinemaAnalysisFrames*1000f/(start-cinemaAnalysisEpoch)
                                         cinemaAnalysisFrames=0;cinemaAnalysisEpoch=start
                                     }
                                 }
-                                synchronized(frameLock) {
-                                    val old=this@VrHomeActivity.frame
-                                    this@VrHomeActivity.frame=upright;frameFresh.set(true)
-                                    old?.recycle()
-                                }
-                                cinemaCameraActive=true
+                                if(tracker6.cameraCpuFallback){
+                                    val preview=if(cinemaCameraCorrection==0) upright else upright.rotate(cinemaCameraCorrection)
+                                    if(preview!==upright) upright.recycle()
+                                    synchronized(frameLock){val previous=this@VrHomeActivity.frame;this@VrHomeActivity.frame=preview;frameFresh.set(true);previous?.recycle()}
+                                    cinemaCameraActive=true
+                                }else upright.recycle()
                                 return@execute
                             }
                             arFrameMap = floatArrayOf(frame.viewLeft, frame.viewTop, frame.viewWidth, frame.viewHeight)
@@ -2895,7 +2998,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, keyboardTexture)
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, keyboard.bitmap, 0)
             }
-            if(!BuildConfig.BE || tracker6?.ownsCamera==true) synchronized(frameLock) {
+            if(!BuildConfig.BE || tracker6?.cameraCpuFallback==true) synchronized(frameLock) {
                 val bitmap = frame
                 if (bitmap != null && frameFresh.getAndSet(false) && !bitmap.isRecycled) {
                     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cameraTexture)
@@ -2961,6 +3064,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
             val eyeAspect = eyeWidth.toFloat() / height
             // Keep the pointer mapping in step with how the camera image is laid out below.
+            if(BuildConfig.BE) tracker6?.cameraAspect?.let {cameraAspect=if(cinemaCameraCorrection%180==0) it else 1f/it}
             if (tracker6?.projection != null) {
                 // ARCore landmarks are already placed on the eye's view; its projection sets the angles.
                 viewScaleX = 1f / projection[0]
@@ -2983,6 +3087,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 // leaves the camera to CameraX and so draws the usual cropped frame.
                 val passthroughMap = tracker6?.passthroughUv
                 if (hasEnvironment || BuildConfig.BE && environmentId!=Environments.REAL_WORLD) Unit
+                else if(BuildConfig.BE && tracker6?.ownsCamera==true && tracker6.drawCamera(eyeAspect,cinemaCameraCorrection)) Unit
                 else if(BuildConfig.BE && tracker6?.ownsCamera!=true && cinemaCameraActive && cinemaPreview?.ready==true) {
                     val preview=cinemaPreview!!
                     cameraAspect=preview.aspect
@@ -3451,7 +3556,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     CinemaGazeController.State.DISABLED,CinemaGazeController.State.UNAVAILABLE -> GLES20.glUniform4f(color,.5f,.5f,.5f,.8f)
                     else -> GLES20.glUniform4f(color,.4f,.8f,1f,1f)
                 }
-                ring3d(b[3],b[4],b[5],outer*1.7f,outer*1.3f,position,cinemaDwell.progress)
+                if(cinemaHeadPinch && cinemaHandDriving) GLES20.glUniform4f(color,if(pinching) .3f else .4f,1f,.7f,1f)
+                ring3d(b[3],b[4],b[5],outer*1.7f,outer*1.3f,position,if(cinemaHeadPinch && cinemaHandDriving) 1f else cinemaDwell.progress)
             }
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         }

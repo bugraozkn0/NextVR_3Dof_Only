@@ -8,7 +8,7 @@ package com.samrat.cardboardhands
 internal object EasyArPixels {
     data class Rgb(val width: Int, val height: Int, val pixels: IntArray)
 
-    fun decode(bytes: ByteArray, format: Int, width: Int, height: Int, stride: Int, rows: Int): Rgb? {
+    fun decode(bytes: ByteArray, format: Int, width: Int, height: Int, stride: Int, rows: Int, reuse:IntArray?=null): Rgb? {
         if (width <= 0 || height <= 0 || stride < width || rows < height ||
             stride > 8192 || rows > 8192) return null
         val size = stride * rows
@@ -18,7 +18,7 @@ internal object EasyArPixels {
         if (bytes.size < required) return null
         val step = ((maxOf(width, height) + 639) / 640).coerceAtLeast(1)
         val w = (width + step - 1) / step; val h = (height + step - 1) / step
-        val out = IntArray(w * h)
+        val out = reuse?.takeIf {it.size==w*h} ?: IntArray(w * h)
         fun b(i: Int) = bytes[i].toInt() and 255
         for (y in 0 until h) for (x in 0 until w) {
             val sx = x * step; val sy = y * step

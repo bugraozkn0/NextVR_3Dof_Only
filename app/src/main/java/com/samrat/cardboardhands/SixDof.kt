@@ -93,6 +93,16 @@ interface SixDof {
     fun attachTexture(texture: Int) = Unit
 
     fun setDisplay(rotation: Int, eyeWidth: Int, height: Int) = Unit
+    /** Camera-owned preview is independent of optional hand inference. GL-thread methods. */
+    fun imageDemand(preview: Boolean, scan: Boolean) = Unit
+    fun drawCamera(eyeAspect: Float, correction: Int): Boolean = false
+    fun releaseGl() = Unit
+    val cameraAspect: Float? get() = null
+    /** Always-readable short tracking state, not only a hidden diagnostics page. */
+    fun trackingSummary(): String = statusText()
+    val placementPoint: FloatArray? get() = null
+    val positionTravelMeters:Float get() = 0f
+    val cameraCpuFallback:Boolean get() = false
 }
 
 /**

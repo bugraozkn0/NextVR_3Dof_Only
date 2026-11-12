@@ -22,6 +22,7 @@ private const val POINTS = 21
  * wrists MediaPipe misses), the detector the rest of PhoneXR uses.
  */
 class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
+    val usingGpu=useGpu
 
     /**
      * One hand in a frame. [x] and [y] are where the thumb tip and the index tip meet, on the
@@ -58,7 +59,8 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
     // BE uses the existing MediaPipe model directly: no YOLO model, rescue pass or extra thread.
     private val cinemaHands = if (BuildConfig.BE) com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.createFromOptions(context,
         com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker.HandLandmarkerOptions.builder()
-            .setBaseOptions(com.google.mediapipe.tasks.core.BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
+            .setBaseOptions(com.google.mediapipe.tasks.core.BaseOptions.builder().setModelAssetPath("hand_landmarker.task")
+                .setDelegate(if(useGpu) com.google.mediapipe.tasks.core.Delegate.GPU else com.google.mediapipe.tasks.core.Delegate.CPU).build())
             .setRunningMode(com.google.mediapipe.tasks.vision.core.RunningMode.VIDEO)
             .setNumHands(2).setMinHandDetectionConfidence(.6f).setMinHandPresenceConfidence(.6f).setMinTrackingConfidence(.6f).build()) else null
     /** Kept as the application context: a latch outlives the screen it was made on. */
@@ -105,14 +107,17 @@ class PinchHands(context: Context, useGpu: Boolean = false) : AutoCloseable {
             // already, so a hand it names "Right" is the user's left.
             val left = name.equals("Right", ignoreCase = true)
             val shape = HandGestures.shape(points, left)
+            // Classify pinch before cursor smoothing: smoothing 21 landmarks plus the
+            // pointer plus the debounce used to delay the same gesture three times.
+            val gesture = if(BuildConfig.BE) raw.getOrNull(index)?.let {HandGestures.shape(it,left)} ?: shape else shape
             val depth = result.worldLandmarks().getOrNull(index)
                 ?.let { HandGestures.tipDepth(points, it, scaleX, scaleY) } ?: 0f
             // Closed and open have their own distances, so a hand hovering near a pinch does not
             // flicker; the distances are this user's own, measured in the setup.
             val latch = latches.getOrPut(name) { HandProfile.latch(app) }
             val before = latch.pinching
-            val pinching = latch.update(shape)
-            hands += Hand(left, shape.pinchX, shape.pinchY, pinching, pinching && !before, depth, shape)
+            val pinching = latch.update(gesture)
+            hands += Hand(left, shape.pinchX, shape.pinchY, pinching, pinching && !before, depth, gesture)
         }
         val drawn = landmarks.filter { it.size >= POINTS }.map { points ->
             FloatArray(POINTS * 3) { i ->

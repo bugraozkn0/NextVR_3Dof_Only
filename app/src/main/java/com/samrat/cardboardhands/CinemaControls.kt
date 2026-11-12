@@ -14,10 +14,12 @@ internal object CinemaControls {
         "scrollUp", "scrollDown", "play", "seekBack", "seekForward", "fullscreen",
         "size", "distance", "curve", "recenter", "environment", "passthrough",
         "alignScreen", "roomLeft", "roomRight", "cameraRotate",
-        "website", "hands", "dwell", "sensitivity", "diagnostics", "help", "hide")
+        "website", "hands", "inputMode", "roomLock", "scanRoom", "dwell", "sensitivity", "diagnostics", "help", "more", "hide")
     val video = browser.filter { it !in listOf("back", "forward", "reload", "address", "home", "scrollUp", "scrollDown", "fullscreen") }
-    fun actions(isBrowser: Boolean, shown: Boolean): List<String> =
+    fun actions(isBrowser: Boolean, shown: Boolean, advanced:Boolean=true): List<String> =
         if (!shown) (if (isBrowser) listOf("show", "scrollUp", "scrollDown", "help") else listOf("show", "help"))
+        else if(!advanced) (if(isBrowser) listOf("back","address","cinema","scrollUp","scrollDown","play","fullscreen","alignScreen","roomLock","inputMode","more","hide")
+            else listOf("play","seekBack","seekForward","cinema","alignScreen","roomLock","size","distance","inputMode","scanRoom","more","hide"))
         else if (isBrowser) browser else video
     fun hit(u: Float, v: Float, actions: List<String>): String? {
         // The bottom 80/480 pixels contain help text, not buttons.
@@ -31,6 +33,7 @@ internal object CinemaControls {
         return actions.getOrNull(row * cols + col)
     }
     fun label(action: String) = when(action) {
+        "inputMode" -> "Input mode";"roomLock" -> "Lock / unlock";"scanRoom" -> "Scan room";"more" -> "More / less"
         "scrollUp" -> "Scroll up"; "scrollDown" -> "Scroll down"; "play" -> "Play / pause"
         "seekBack" -> "−10 seconds"; "seekForward" -> "+10 seconds"; "cinema" -> "Cinema / browser"
         "size" -> "Screen size"; "distance" -> "Distance"; "curve" -> "Curvature"
@@ -55,7 +58,7 @@ internal object CinemaControls {
             p.color = if (a==hovered) Color.rgb(55,87,110) else Color.rgb(27,36,50)
             c.drawRoundRect(r,16f,16f,p)
             p.color = if (a in unavailable) Color.rgb(125,132,145) else Color.WHITE
-            p.textSize = 27f; p.textAlign = Paint.Align.CENTER
+            p.textSize = if(rows<=2) 38f else 27f; p.textAlign = Paint.Align.CENTER
             val shown=if(a=="play") when(playback) {"playing"->"Pause";"paused","ended"->"Play";"buffering"->"Buffering…";else->label(a)} else label(a)
             c.drawText(shown,r.centerX(),r.centerY()+10,p)
         }

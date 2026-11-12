@@ -1,4 +1,9 @@
-# EasyAR Native Cinema — first milestone
+# EasyAR Native Cinema
+
+The current quality pass and task packages are documented in [CINEMA_QUALITY_PACKAGES.md](CINEMA_QUALITY_PACKAGES.md).
+It adds automatic live-camera setup, visible tracking/room-lock status, GPU preview,
+head-directed pinch selection and a touch rescue menu. The sections below describe
+the initial backend contract; the quality-pass document supersedes the old CPU preview limits.
 
 Base: `feature/cinema-passthrough-mvp` at `b8fb011e2c784bec7cce8fa6396e01e3424af98e`.
 Work branch: `feature/easyar-native-cinema`. Android application ID remains
@@ -88,10 +93,12 @@ The same EasyAR image stream supplies existing PinchHands/MediaPipe and passthro
 Pinch selection, scroll, drag/resize, two-hand zoom, gaze/dwell, browser/YouTube,
 video and stereo/lens rendering retain their existing handlers. Conversion supports
 SDK Gray, NV21, NV12, I420, YV12, RGB/BGR and RGBA/BGRA padded layouts. Unknown layouts
-are reported; no hand feature is silently deleted. This first milestone uses a
-bounded CPU copy/conversion (maximum 640-pixel image side, sampled at most ~15 Hz)
-for preview/hands, independently of the native 30 Hz tracking stream. GPU image
-sharing, performance polish and moving 360° environments are deferred.
+are reported; no hand feature is silently deleted. The quality pass uploads raw padded camera planes through a reused direct buffer
+and converts them in a GPU shader independently of hand inference. Only hand images
+use bounded CPU conversion (maximum 640-pixel side), with reused byte/pixel arrays.
+Hands use a GPU delegate when available, with CPU fallback. Camera input remains
+the built-in native 30 Hz stream; achieved device rates require phone measurement.
+Moving 360° environments remain deferred.
 
 Rendering and flat/curved window hit tests use the translated head origin.
 Position is updated before both gaze hit testing and drawing in each GL frame.

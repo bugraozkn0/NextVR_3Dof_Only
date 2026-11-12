@@ -30,18 +30,22 @@ internal class CinemaInputArbiter {
     fun clear() { lastHand = Long.MIN_VALUE }
     fun source(now: Long) = if (lastHand != Long.MIN_VALUE && now >= lastHand && now - lastHand < 300) Source.HAND else Source.GAZE
 }
-internal class CinemaPinchGate {
+internal class CinemaPinchGate(private val holdMs:Long=65, private val requireOpen:Boolean=false) {
     enum class Event { NONE, DOWN, UP }
     private var down = false
     private var candidate = false
     private var since = 0L
+    private var armed = !requireOpen
+    val ready get()=armed
     fun update(seen: Boolean, pinch: Boolean, now: Long): Event {
         if (!seen) {
-            val was = down; down = false; candidate = false; since = now
+            val was = down; down = false; candidate = false; since = now;armed = !requireOpen
             return if (was) Event.UP else Event.NONE
         }
+        if(!pinch) armed=true
+        if(!armed) {candidate=false;since=now;return Event.NONE}
         if (pinch != candidate || now < since) { candidate = pinch; since = now }
-        if (candidate != down && now - since >= 65) {
+        if (candidate != down && now - since >= holdMs) {
             down = candidate; return if (down) Event.DOWN else Event.UP
         }
         return Event.NONE
