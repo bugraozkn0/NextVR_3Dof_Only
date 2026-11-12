@@ -126,7 +126,7 @@ object SixDofSupport {
 
     /** ARCore; the install prompt is only raised where the caller really starts a session. */
     fun arCore(context: Context, requestInstall: Boolean = false): Availability {
-        if (BuildConfig.LITE) return Availability.MISSING
+        if (BuildConfig.LITE || BuildConfig.BE) return Availability.MISSING
         return when (ArTracker.availability(context, requestInstall)) {
             ArTracker.Availability.READY -> Availability.READY
             ArTracker.Availability.CHECKING -> Availability.CHECKING
@@ -168,6 +168,7 @@ object SixDofSupport {
      * is installed, VINS-Mono where the camera and IMU are there to carry it, nothing where neither is.
      */
     fun bestMode(context: Context): Settings.SixDofMode = when {
+        BuildConfig.BE -> Settings.SixDofMode.NONE // Explicit opt-in; opening Cinema never takes the camera.
         arCore(context) == Availability.READY -> Settings.SixDofMode.ARCORE
         vinsMono(context) == Availability.READY -> Settings.SixDofMode.VINS_MONO
         else -> Settings.SixDofMode.NONE
@@ -177,11 +178,13 @@ object SixDofSupport {
         Settings.SixDofMode.NONE -> Availability.READY
         Settings.SixDofMode.ARCORE -> arCore(context)
         Settings.SixDofMode.VINS_MONO -> vinsMono(context)
+        Settings.SixDofMode.EASYAR -> if (EasyArTracker.missingReason(context) == null) Availability.READY else Availability.MISSING
     }
 
     /** Why a mode cannot be picked, in one line for the settings screen; null when it can. */
     fun unavailableReason(context: Context, mode: Settings.SixDofMode): String? = when (mode) {
         Settings.SixDofMode.NONE -> null
+        Settings.SixDofMode.EASYAR -> EasyArTracker.missingReason(context)
         Settings.SixDofMode.ARCORE -> when {
             BuildConfig.LITE -> "Only in NextVR Full"
             availability(context, mode) == Availability.CHECKING -> "Checking Google Play Services for AR…"
@@ -190,7 +193,7 @@ object SixDofSupport {
 
         Settings.SixDofMode.VINS_MONO -> when {
             BuildConfig.LITE -> "Only in NextVR Full"
-            BuildConfig.BE -> "This edition has no camera"
+            BuildConfig.BE -> "Cinema uses EasyAR Native for 6DoF"
             !VinsTracker.available -> "The VINS-Mono core is not in this build"
             !hasImu(context) -> "Needs a gyroscope and an accelerometer"
             !hasCamera(context) -> "Needs a camera"
@@ -202,10 +205,11 @@ object SixDofSupport {
      * Starts the tracker for [mode], or returns null when it cannot start (then the home stays 3DoF
      * with its neck model, exactly as before). Only ever one tracker at a time.
      */
-    fun create(activity: Activity, mode: Settings.SixDofMode): SixDof? = when (mode) {
+    fun create(activity: Activity, mode: Settings.SixDofMode, headAt: ((Long, FloatArray) -> Unit)? = null): SixDof? = when (mode) {
         Settings.SixDofMode.NONE -> null
-        Settings.SixDofMode.ARCORE -> if (BuildConfig.LITE) null else ArTracker.create(activity)
-        Settings.SixDofMode.VINS_MONO -> VinsTracker.create(activity)
+        Settings.SixDofMode.ARCORE -> if (BuildConfig.LITE || BuildConfig.BE) null else ArTracker.create(activity)
+        Settings.SixDofMode.VINS_MONO -> if (BuildConfig.BE) null else VinsTracker.create(activity)
+        Settings.SixDofMode.EASYAR -> EasyArTracker.create(activity, headAt)
     }
 }
 

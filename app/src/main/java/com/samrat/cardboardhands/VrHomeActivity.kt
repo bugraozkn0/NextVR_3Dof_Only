@@ -435,8 +435,14 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     }
     private fun updateCinemaCamera() {
         val permission=ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED
-        val wants=environmentId==Environments.REAL_WORLD||cinemaHandsEnabled
+        val wants=environmentId==Environments.REAL_WORLD||cinemaHandsEnabled||sixMode==Settings.SixDofMode.EASYAR
         if(wants && !permission) {if(!cinemaPermissionPending) {cinemaPermissionPending=true;requestPermissions(arrayOf(Manifest.permission.CAMERA),cameraPreviewPermissionRequest)};return}
+        if(six?.ownsCamera==true || sixMode==Settings.SixDofMode.EASYAR) {
+            // Invalidate pending CameraX binds, even while EasyAR is initializing or failed.
+            // None explicitly restores the original CameraX hands/passthrough path.
+            cinemaBindGeneration++;cameraProvider?.unbindAll();cinemaCameraActive=false
+            return
+        }
         if(CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),permission,environmentId==Environments.REAL_WORLD,cinemaHandsEnabled)) bindCamera()
         else {cinemaBindGeneration++;cameraProvider?.unbindAll();cinemaCameraActive=false;cinemaHandFrame=null}
     }
@@ -481,6 +487,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private var renderer: Renderer? = null
     /** Head position in the world (metres), from the 6DoF tracker; stays zero in 3DoF. */
     private val headPosition = FloatArray(3)
+    private val cinemaPositionBase = FloatArray(3)
+    private var sixSwitchGeneration = 0
+    private var cinemaBoundCamera: androidx.camera.core.Camera? = null
     /** How the last hand-tracking frame lies on the eye's view (ARCore frames): left, top, width, height. */
     @Volatile private var arFrameMap: FloatArray? = null
     /** The latest ARCore camera frame, kept for "take a photo". */
@@ -679,6 +688,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         // The mode may have been changed in the phone's own app while the home was in the background.
         val wanted = Settings.sixDofMode(this)
         if (wanted != sixMode) applySixDofMode(wanted, announce = false)
+        else if(BuildConfig.BE && wanted==Settings.SixDofMode.EASYAR && six==null &&
+            ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED)
+            applySixDofMode(wanted, announce=false)
         surfaceView.onResume()
         carMode = Settings.travelMode(this)
         tracker.travelMode = carMode
@@ -715,6 +727,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         super.onPause()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         if(BuildConfig.BE) {
+            sixSwitchGeneration++
             windows.forEach {(it.content as? VideoContent)?.cinemaForeground(false)}
             cinemaSessions.values.forEach {it.foreground(false)};cinemaDwell.reset();cinemaInput.clear();cinemaHandFrame=null
             cinemaPinch.update(false,false,SystemClock.uptimeMillis())
@@ -773,9 +786,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
      * IMU) is checked by [SixDofSupport] and reported by the settings screens.
      */
     private fun startSixDof(mode: Settings.SixDofMode): SixDof? {
-        // Car mode is always 3DoF: in a moving car the room itself moves, and BE has no camera at all.
-        if (BuildConfig.BE || mode == Settings.SixDofMode.NONE || Settings.travelMode(this)) return null
-        val tracker = runCatching { SixDofSupport.create(this, mode) }.onFailure { Log.w(TAG, "$mode 6DoF failed to start", it) }.getOrNull()
+        // Cinema opts into EasyAR only. Travel mode remains rotation-only for every backend.
+        if ((BuildConfig.BE && mode != Settings.SixDofMode.EASYAR) || mode == Settings.SixDofMode.NONE || Settings.travelMode(this)) return null
+        val tracker = runCatching { SixDofSupport.create(this, mode) { time,out -> this.tracker.copyHeadAt(time,out) } }.onFailure { Log.w(TAG, "$mode 6DoF failed to start", it) }.getOrNull()
             ?: return null
         // While the home is in the background the tracker stays asleep: onResume wakes it. Waking it
         // here, when it is being started from a live settings change, is what makes a switch take
@@ -799,21 +812,43 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         if (isFinishing) return@runOnUiThread
         Settings.setSixDofMode(this, mode)
         sixMode = mode
+        val switchGeneration = ++sixSwitchGeneration
+        cinemaBindGeneration++
         val old = six
         six = null
         if (old != null) { old.pause(); old.close() }
-        synchronized(headPosition) { headPosition.fill(0f) }
-        six = startSixDof(mode)
-        neckModel = !BuildConfig.BE && six == null && !Settings.travelMode(this)
-        cameraProvider?.unbindAll()
-        if (six?.ownsCamera != true && !BuildConfig.BE &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        ) bindCamera()
-        if (announce) {
-            val tracker = six
-            toast(if (tracker == null) tr("3DoF: head rotation only") else tracker.statusText())
+        synchronized(headPosition) {
+            if(BuildConfig.BE) System.arraycopy(headPosition,0,cinemaPositionBase,0,3)
+            else headPosition.fill(0f)
         }
-        redraw.set(true)
+        val finishSwitch = {
+            if(switchGeneration==sixSwitchGeneration && !isFinishing) {
+                six = startSixDof(mode)
+                neckModel = !BuildConfig.BE && six == null && !Settings.travelMode(this)
+                if(BuildConfig.BE) updateCinemaCamera()
+                else if(six?.ownsCamera!=true && ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED) bindCamera()
+                if(announce) toast(six?.statusText() ?: if(mode==Settings.SixDofMode.EASYAR)
+                    EasyArTracker.failureReason() ?: SixDofSupport.unavailableReason(this,mode) ?: "EasyAR waiting for camera permission"
+                    else tr("3DoF: head rotation only"))
+                redraw.set(true)
+            }
+        }
+        val previousCamera=cinemaBoundCamera
+        if(BuildConfig.BE && mode==Settings.SixDofMode.EASYAR && previousCamera!=null &&
+            previousCamera.cameraInfo.cameraState.value?.type!=androidx.camera.core.CameraState.Type.CLOSED) {
+            // unbindAll is asynchronous. Wait for actual HAL closure before EasyAR opens it.
+            val states=previousCamera.cameraInfo.cameraState
+            val observer=object:androidx.lifecycle.Observer<androidx.camera.core.CameraState> {
+                override fun onChanged(value:androidx.camera.core.CameraState) {
+                    if(value.type==androidx.camera.core.CameraState.Type.CLOSED) {
+                        states.removeObserver(this)
+                        finishSwitch()
+                    } else if(switchGeneration!=sixSwitchGeneration) states.removeObserver(this)
+                }
+            }
+            states.observe(this,observer)
+            cameraProvider?.unbindAll();cinemaCameraActive=false
+        } else {cameraProvider?.unbindAll();finishSwitch()}
     }
 
     /**
@@ -931,6 +966,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
     private fun recenter() {
         tracker.recenter()
         six?.recenter()
+        if(BuildConfig.BE) synchronized(headPosition) {cinemaPositionBase.fill(0f);headPosition.fill(0f)}
         sensorSixDof?.reset()
     }
 
@@ -941,6 +977,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             val mode = sixMode
             val missing = SixDofSupport.unavailableReason(this@VrHomeActivity, mode)
             return when {
+                mode == Settings.SixDofMode.EASYAR && EasyArTracker.failureReason()!=null -> "3DoF · ${EasyArTracker.failureReason()}"
                 mode == Settings.SixDofMode.NONE -> "3DoF · 6DoF is off in settings"
                 missing != null -> "3DoF · $missing"
                 else -> "3DoF · the ${mode.title} tracker is not running"
@@ -1325,10 +1362,11 @@ class VrHomeActivity : Activity(), LifecycleOwner {
 
     @SuppressLint("MissingPermission") // The callback checks CAMERA immediately before binding.
     private fun bindCinemaCamera() {
+        if(six?.ownsCamera==true || sixMode==Settings.SixDofMode.EASYAR) return
         val generation=++cinemaBindGeneration
         val future=ProcessCameraProvider.getInstance(this)
         future.addListener({
-            if(generation!=cinemaBindGeneration || !CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+            if(generation!=cinemaBindGeneration || six?.ownsCamera==true || sixMode==Settings.SixDofMode.EASYAR || !CinemaCameraDemand.required(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
                 ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED,
                 environmentId==Environments.REAL_WORLD,cinemaHandsEnabled)||isFinishing) return@addListener
             val provider=runCatching {future.get()}.getOrElse {toast("Camera unavailable");return@addListener}
@@ -1393,6 +1431,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 .apply {cases.forEach {addUseCase(it)}}.build()
             runCatching {provider.bindToLifecycle(this,CameraSelector.DEFAULT_BACK_CAMERA,group)}
                 .onSuccess {camera ->
+                    cinemaBoundCamera=camera
                     cinemaCameraActive=true
                     camera.cameraInfo.cameraState.observe(this) {state ->
                         if(generation==cinemaBindGeneration && state.error!=null) {cinemaCameraActive=false;cinemaHandFrame=null;toast("Camera interrupted • Gaze remains available")}
@@ -1697,10 +1736,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         val origin = synchronized(headPosition) { floatArrayOf(headPosition[0], headPosition[1], headPosition[2], 1f) }
         val o = FloatArray(4)
         Matrix.multiplyMV(o, 0, rotate, 0, origin, 0)
-        if (d[2] >= -1e-3f) return null
-        val t = (-radius - o[2]) / d[2]
-        if (t <= 0f) return null
-        return floatArrayOf(o[0] + d[0] * t, o[1] + d[1] * t)
+        return CinemaRayPlane.intersect(d[0],d[1],d[2],o[0],o[1],o[2],radius)
     }
 
     private fun updateHit(target: Hit?) {
@@ -2047,7 +2083,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (BuildConfig.BE && requestCode == cameraPreviewPermissionRequest) {
             cinemaPermissionPending=false
-            if(grantResults.isNotEmpty() && grantResults[0]==PackageManager.PERMISSION_GRANTED) updateCinemaCamera()
+            if(grantResults.isNotEmpty() && grantResults[0]==PackageManager.PERMISSION_GRANTED) {
+                if(sixMode==Settings.SixDofMode.EASYAR) applySixDofMode(sixMode,announce=false) else updateCinemaCamera()
+            }
             else {cinemaHandsEnabled=false;cinemaPrefs.edit().putBoolean("hands",false).apply();setEnvironment(lastWorld);toast("Camera denied • Browser and movies still work")}
         }
     }
@@ -2740,7 +2778,8 @@ class VrHomeActivity : Activity(), LifecycleOwner {
         /** 6DoF: one step of the tracker — head position, and a camera frame for the hands when free. */
         private fun updateSixDof(tracker6: SixDof) {
             tracker.copyHead(head)
-            val job = tracker6.update(head, wantImage = !busy.get())
+            val job = tracker6.update(head, wantImage = !busy.get() &&
+                (!BuildConfig.BE || cinemaHandsEnabled || environmentId==Environments.REAL_WORLD))
             // The table, once a second: where it stands is remembered for the keyboard. Only a
             // backend that sees geometry has any; VINS-Mono tracks features, not walls.
             if (tracker6.supportsRoomScan && ++scanFrames % 60 == 0) RoomScan.remember(this@VrHomeActivity, tracker6.surfaces)
@@ -2749,6 +2788,43 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                     try {
                         val frame = job()
                         if (frame != null) {
+                            if(BuildConfig.BE) {
+                                if(six!==tracker6 || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                                    frame.bitmap.recycle()
+                                    return@execute
+                                }
+                                var upright=frame.bitmap
+                                if(cinemaCameraCorrection!=0) {
+                                    val corrected=Bitmap.createBitmap(upright,0,0,upright.width,upright.height,
+                                        android.graphics.Matrix().apply {postRotate(cinemaCameraCorrection.toFloat())},true)
+                                    if(corrected!==upright) upright.recycle()
+                                    upright=corrected
+                                }
+                                val start=SystemClock.uptimeMillis()
+                                val interval=maxOf(83L,(cinemaAnalysisMs*1.5f).toLong()).coerceAtMost(400L)
+                                if(cinemaHandsEnabled && pinchHands!=null && start-cinemaLastAnalysis>=interval) {
+                                    cinemaLastAnalysis=start
+                                    runCatching {pinchHands?.detect(upright,frame.timestampNs/1_000_000L,scaleX=viewScaleX,scaleY=viewScaleY)}
+                                        .onFailure {Log.w(TAG,"EasyAR hand image rejected; gaze remains active",it)}.getOrNull()?.let {
+                                        if(six===tracker6 && cinemaHandsEnabled && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                                            cinemaHandFrame=it;handPoints=it.points
+                                        }
+                                    }
+                                    cinemaAnalysisMs=(SystemClock.uptimeMillis()-start).toFloat()
+                                    cinemaAnalysisFrames++
+                                    if(start-cinemaAnalysisEpoch>=1000) {
+                                        cinemaAnalysisFps=cinemaAnalysisFrames*1000f/(start-cinemaAnalysisEpoch)
+                                        cinemaAnalysisFrames=0;cinemaAnalysisEpoch=start
+                                    }
+                                }
+                                synchronized(frameLock) {
+                                    val old=this@VrHomeActivity.frame
+                                    this@VrHomeActivity.frame=upright;frameFresh.set(true)
+                                    old?.recycle()
+                                }
+                                cinemaCameraActive=true
+                                return@execute
+                            }
                             arFrameMap = floatArrayOf(frame.viewLeft, frame.viewTop, frame.viewWidth, frame.viewHeight)
                             pinchHands?.detect(frame.bitmap, frame.timestampNs / 1_000_000L, map = arFrameMap, scaleX = viewScaleX, scaleY = viewScaleY)?.let { onPinch(it) }
                             // Swapped under the lock that photo and call snapshots read it with.
@@ -2759,17 +2835,23 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                             }
                         }
                     } catch (error: Throwable) {
-                        Log.w(TAG, "ARCore frame failed", error)
+                        Log.w(TAG, "6DoF camera frame failed", error)
                     } finally {
                         busy.set(false)
                     }
                 }
             }
-            synchronized(headPosition) { tracker6.copyPosition(headPosition) }
+            synchronized(headPosition) {
+                tracker6.copyPosition(headPosition)
+                if(BuildConfig.BE) for(i in 0..2) headPosition[i]+=cinemaPositionBase[i]
+            }
         }
 
         override fun onDrawFrame(unused: GL10?) {
             while (true) glTasks.poll()?.invoke() ?: break
+            // Position must be sampled before both hit testing and drawing this frame.
+            val tracker6 = six
+            if (tracker6 != null) updateSixDof(tracker6)
             followWithPanel()
             if (BuildConfig.BE) {
                 updateCinemaGaze()
@@ -2780,8 +2862,6 @@ class VrHomeActivity : Activity(), LifecycleOwner {
             }
             cinemaPreview?.correctionDegrees=cinemaCameraCorrection
             cinemaPreview?.latch()
-            val tracker6 = six
-            if (tracker6 != null) updateSixDof(tracker6)
             // The neck model only stands in when no tracker exists at all. A tracker that is merely
             // unsolved keeps the last pose, which does not swim the scene around on every head turn.
             if (neckModel && !carMode) neck()
@@ -2806,7 +2886,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, keyboardTexture)
                 GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, keyboard.bitmap, 0)
             }
-            if(!BuildConfig.BE) synchronized(frameLock) {
+            if(!BuildConfig.BE || tracker6?.ownsCamera==true) synchronized(frameLock) {
                 val bitmap = frame
                 if (bitmap != null && frameFresh.getAndSet(false) && !bitmap.isRecycled) {
                     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, cameraTexture)
@@ -2894,7 +2974,7 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                 // leaves the camera to CameraX and so draws the usual cropped frame.
                 val passthroughMap = tracker6?.passthroughUv
                 if (hasEnvironment || BuildConfig.BE && environmentId!=Environments.REAL_WORLD) Unit
-                else if(BuildConfig.BE && cinemaCameraActive && cinemaPreview?.ready==true) {
+                else if(BuildConfig.BE && tracker6?.ownsCamera!=true && cinemaCameraActive && cinemaPreview?.ready==true) {
                     val preview=cinemaPreview!!
                     cameraAspect=preview.aspect
                     quad(externalProgram,preview.texture,identity,preview.quad(eyeAspect),external=true)
@@ -3005,7 +3085,9 @@ class VrHomeActivity : Activity(), LifecycleOwner {
                         val actions=cinemaActions(window)
                         val action=(hit as? Hit.Cinema)?.takeIf {it.window==window}?.action
                         val disabled=cinemaDisabled(window)
-                        val hint=if(cinemaCameraActive && cinemaDiagnostics)
+                        val hint=if(sixMode==Settings.SixDofMode.EASYAR && cinemaDiagnostics)
+                            (six?.statusText() ?: EasyArTracker.failureReason() ?: "EasyAR unavailable · 3DoF rotation")
+                            else if(cinemaCameraActive && cinemaDiagnostics)
                             "Camera capture %.0f / preview %.0f / render %.0f FPS • hands %.0f FPS / %.0f ms • buffer %.0f ms".format(
                                 cinemaPreview?.captureFps?:0f,cinemaPreview?.previewFps?:0f,
                                 cinemaRenderFps,if(cinemaHandsEnabled) cinemaAnalysisFps else 0f,

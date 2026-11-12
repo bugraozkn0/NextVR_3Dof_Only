@@ -47,3 +47,8 @@ __pycache__/
 # Local workspace scratch: agent state and debug logs, not source
 .freebuff/
 reports/
+
+# EasyAR SDK and application license supplied locally, never published as source.
+/easyar.local.properties
+/vendor/easyar/
+/app/src/be/assets/environments/

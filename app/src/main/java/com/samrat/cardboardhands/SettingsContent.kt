@@ -336,7 +336,9 @@ class SettingsContent(
         val current = host.sixDofMode()
         HigSection(
             title = "6DoF",
-            footer = "How NextVR finds the room. ARCore looks through the camera with Google Play Services " +
+            footer = if(BuildConfig.BE) "EasyAR Native adds metric head translation. None preserves the original 3DoF camera/hands path. " +
+                "EasyAR owns the camera and supplies the same frames to hands. Use a lit room with visible texture."
+                else "How NextVR finds the room. ARCore looks through the camera with Google Play Services " +
                 "for AR; VINS-Mono does the same with the phone's own camera and IMU, for the phones ARCore " +
                 "does not run on (Huawei, stripped ROMs). None keeps the head's rotation only."
         ) {
@@ -365,7 +367,7 @@ class SettingsContent(
             // The scan is ARCore's alone: VINS-Mono follows the head but not the geometry, so say so
             // rather than showing a scan screen that would sit empty forever.
             !host.canScanRoom() -> HigSection {
-                HigRow("No room scan", "VINS-Mono follows where the head is, not what the walls are: the grid, the table and the boundary need ARCore.",
+                HigRow("No room scan", "This tracker supplies head position. The room-scan grid, table and boundary require ARCore.",
                     detailColor = NextDesign.warnColor)
             }
 

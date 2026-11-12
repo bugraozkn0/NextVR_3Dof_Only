@@ -15,7 +15,8 @@ object Settings {
     enum class SixDofMode(val title: String, val description: String) {
         NONE("None", "Head rotation only"),
         ARCORE("ARCore", "Room tracking through Google Play Services for AR"),
-        VINS_MONO("VINS-Mono", "Visual-inertial tracking using the camera and IMU")
+        VINS_MONO("VINS-Mono", "Visual-inertial tracking using the camera and IMU"),
+        EASYAR("EasyAR Native", "Metric 6DoF Cinema using EasyAR's built-in camera and IMU")
     }
 
     enum class HomeStyle(val title: String) { LARGE("Large"), COMPACT("Compact panel") }

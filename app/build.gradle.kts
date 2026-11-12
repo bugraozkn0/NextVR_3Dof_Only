@@ -1,6 +1,37 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Native Android SDK 4.11.0 Community, extracted from the official distribution.
+// No network download and no license in BuildConfig, source control or task output.
+val easyarLocal = Properties().apply {
+    rootProject.file("easyar.local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+}
+val easyarDir = rootProject.file(easyarLocal.getProperty("sdkDir", "vendor/easyar"))
+val easyarSdkPresent = easyarDir.resolve("EasyAR.jar").isFile &&
+    easyarDir.resolve("arm64-v8a/libEasyAR.so").isFile
+val easyarLicense = easyarLocal.getProperty("licenseKey", "").trim()
+val easyarAssets = layout.buildDirectory.dir("generated/easyarAssets")
+val prepareEasyarLicense = tasks.register("prepareEasyarLicense") {
+    // Always rewrite, including an empty key, so removing local config cannot leave a stale license.
+    outputs.upToDateWhen { false }
+    doLast {
+        easyarAssets.get().file("easyar-license.txt").asFile.apply {
+            parentFile.mkdirs()
+            writeText(easyarLicense)
+        }
+    }
+}
+val verifyEasyarConfiguration = tasks.register("verifyEasyarConfiguration") {
+    doLast {
+        if (providers.gradleProperty("easyar.required").orNull == "true") {
+            check(easyarSdkPresent) { "EasyAR 4.11.0 SDK missing. See EASYAR_CINEMA.md." }
+            check(easyarLicense.isNotBlank()) { "EasyAR license missing from easyar.local.properties." }
+        }
+    }
 }
 
 // The version is pinned: every build names itself 2.0.1, and builds are told apart by the
@@ -113,7 +144,14 @@ android {
     // libvrapi.so of the Gear VR adapter, built by gearvr-shim (see gearvr-shim/STATUS.txt).
     // A local build wins; the checked-in copy lets CI (and a fresh clone) package the adapter.
     val shimBuild = rootProject.file("gearvr-shim/build/assets")
-    sourceSets.getByName("main").assets.srcDir(if (shimBuild.isDirectory) shimBuild else rootProject.file("gearvr-shim/prebuilt"))
+    sourceSets.getByName("main").assets.directories.add((if (shimBuild.isDirectory) shimBuild else rootProject.file("gearvr-shim/prebuilt")).path)
+    sourceSets.getByName("be").apply {
+        kotlin.directories.add(if (easyarSdkPresent) "src/easyar/java" else "src/noEasyar/java")
+        assets.directories.add(easyarAssets.get().asFile.path)
+        if (easyarSdkPresent) jniLibs.directories.add(easyarDir.path)
+    }
+    sourceSets.getByName("full").kotlin.directories.add("src/noEasyar/java")
+    sourceSets.getByName("lite").kotlin.directories.add("src/noEasyar/java")
 
     // Models are memory-mapped straight from the APK (YOLO11, MediaPipe), so they stay uncompressed.
     androidResources {
@@ -127,6 +165,7 @@ android {
 }
 
 dependencies {
+    if (easyarSdkPresent) "beImplementation"(files(easyarDir.resolve("EasyAR.jar")))
     implementation("androidx.activity:activity-ktx:1.10.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
@@ -179,5 +218,12 @@ dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
 
     testImplementation("junit:junit:4.13.2")
+}
+
+tasks.matching { it.name.startsWith("mergeBe") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(prepareEasyarLicense)
+}
+tasks.matching { it.name == "preBeDebugBuild" || it.name == "preBeReleaseBuild" }.configureEach {
+    dependsOn(verifyEasyarConfiguration)
 }
 

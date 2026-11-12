@@ -26,14 +26,14 @@ class CinemaLauncherActivity : Activity() {
             setBackgroundColor(Color.rgb(13, 17, 26))
         }
         val title = TextView(this).apply {
-            text = "3DoF Cinema"
+            text = "NextVR Cinema"
             textSize = 28f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
         }
         val caption = TextView(this).apply {
             text = "Browser, videos and photos. No account or gamepad needed. " +
-                "Camera is optional: enable Real world in VR."
+                "3DoF needs no camera. EasyAR 6DoF uses the camera for tracking and hands."
             textSize = 16f
             setTextColor(Color.LTGRAY)
             gravity = Gravity.CENTER
@@ -46,6 +46,17 @@ class CinemaLauncherActivity : Activity() {
         val gallery = Button(this).apply {
             text = "Allow photos and videos"
             setOnClickListener { requestMediaAccess() }
+        }
+        val tracking = Button(this).apply {
+            fun refresh() { text="Tracking: "+Settings.sixDofMode(this@CinemaLauncherActivity).title+" (tap to switch)" }
+            refresh()
+            setOnClickListener {
+                val mode=if(Settings.sixDofMode(this@CinemaLauncherActivity)==Settings.SixDofMode.EASYAR)
+                    Settings.SixDofMode.NONE else Settings.SixDofMode.EASYAR
+                val reason=SixDofSupport.unavailableReason(this@CinemaLauncherActivity,mode)
+                if(reason==null) {Settings.setSixDofMode(this@CinemaLauncherActivity,mode);refresh()}
+                else android.widget.Toast.makeText(this@CinemaLauncherActivity,reason,android.widget.Toast.LENGTH_LONG).show()
+            }
         }
         val file = Button(this).apply {
             text="Open a single video (no gallery permission)"
@@ -60,6 +71,7 @@ class CinemaLauncherActivity : Activity() {
         root.addView(file, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(title, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(caption, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(tracking, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(start, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(gallery, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         setContentView(root)
